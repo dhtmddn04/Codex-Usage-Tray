@@ -39,7 +39,10 @@ NIM_SETVERSION = 0x00000004
 
 NIF_MESSAGE = 0x00000001
 NIF_ICON = 0x00000002
+NIF_INFO = 0x00000010
 NIF_GUID = 0x00000020
+
+NIIF_WARNING = 0x00000002
 
 NOTIFYICON_VERSION_4 = 4
 
@@ -374,6 +377,35 @@ class NativeTrayIcon:
 
         if self._ready.is_set():
             self._replace_icon(self._image)
+
+    def show_notification(
+        self,
+        title: str,
+        message: str,
+    ) -> bool:
+        """Windows 알림 영역에 메시지를 표시한다."""
+        if (
+            not self._ready.is_set()
+            or self._hwnd is None
+        ):
+            return False
+
+        with self._lock:
+            data = self._make_notify_data(
+                flags=NIF_INFO
+            )
+
+            data.szInfoTitle = title[:63]
+            data.szInfo = message[:255]
+            data.dwInfoFlags = NIIF_WARNING
+            data.uTimeout = 5000
+
+            return bool(
+                shell32.Shell_NotifyIconW(
+                    NIM_MODIFY,
+                    ctypes.byref(data),
+                )
+            )
 
     def run(self) -> None:
         """현재 스레드에서 Windows 메시지 루프를 실행한다."""

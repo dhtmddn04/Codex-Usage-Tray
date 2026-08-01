@@ -1,9 +1,13 @@
 import ctypes
 from ctypes import wintypes
+import json
+import os
+from pathlib import Path
 import queue
 import sys
 import threading
 import time
+import winreg
 from datetime import datetime
 from typing import Any
 
@@ -24,8 +28,36 @@ POPUP_WIDTH = 340
 INITIAL_POPUP_HEIGHT = 220
 TASKBAR_GAP = 72
 
-# 팝업을 닫아도 2분마다 아이콘과 사용량을 갱신
-AUTO_REFRESH_MS = 2 * 60 * 1000
+REFRESH_INTERVAL_OPTIONS = (1, 2, 5, 10)
+DEFAULT_REFRESH_INTERVAL_MINUTES = 2
+
+ICON_DISPLAY_OPTIONS = {
+    "주간": 10_080,
+    "5시간": 300,
+}
+DEFAULT_ICON_DISPLAY_MODE = "주간"
+
+LOW_BALANCE_THRESHOLD_OPTIONS = (
+    0,
+    10,
+    20,
+    30,
+)
+DEFAULT_LOW_BALANCE_THRESHOLD = 20
+
+SETTINGS_DIRECTORY = Path(
+    os.getenv("APPDATA", str(Path.home()))
+) / "CodexUsageTray"
+
+SETTINGS_PATH = (
+    SETTINGS_DIRECTORY
+    / "settings.json"
+)
+
+STARTUP_REGISTRY_PATH = (
+    r"Software\Microsoft\Windows\CurrentVersion\Run"
+)
+STARTUP_VALUE_NAME = "CodexUsageTray"
 
 # 트레이 아이콘 hover 동작
 HOVER_SHOW_DELAY_MS = 180
@@ -100,9 +132,45 @@ class UsageTrayApp:
         self.root = ctk.CTk()
         self.root.withdraw()
 
+        self.settings = self._load_settings()
+        self.auto_refresh_minutes = (
+            self._normalize_refresh_minutes(
+                self.settings.get(
+                    "auto_refresh_minutes"
+                )
+            )
+        )
+
+        self.icon_display_mode = (
+            self._normalize_icon_display_mode(
+                self.settings.get(
+                    "icon_display_mode"
+                )
+            )
+        )
+
+        self.low_balance_threshold = (
+            self._normalize_low_balance_threshold(
+                self.settings.get(
+                    "low_balance_threshold"
+                )
+            )
+        )
+
+        self.start_with_windows = (
+            self._is_startup_enabled()
+        )
+
         self.popup: ctk.CTkToplevel | None = None
+        self.settings_window: ctk.CTkToplevel | None = None
+        self.startup_switch: ctk.CTkSwitch | None = None
         self.content_frame: ctk.CTkFrame | None = None
         self.footer_label: ctk.CTkLabel | None = None
+        self.auto_refresh_label: ctk.CTkLabel | None = None
+
+        self.status_label: ctk.CTkLabel | None = None
+        self.refresh_status_text = "대기"
+        self.refresh_status_color = TEXT_SECONDARY
 
         self.popup_height = INITIAL_POPUP_HEIGHT
         self.loading = False
@@ -110,6 +178,10 @@ class UsageTrayApp:
         self.next_refresh_at: float | None = None
         self.refresh_countdown_job: str | None = None
         self.latest_snapshot: UsageSnapshot | None = None
+
+        self.low_balance_notified_keys: set[
+            tuple[int | None, int | None]
+        ] = set()
 
         self.popup_opened_by_hover = False
         self.hover_show_job: str | None = None
@@ -122,6 +194,189 @@ class UsageTrayApp:
         ] = queue.Queue()
 
         self.tray_icon = self._create_tray_icon()
+
+    @staticmethod
+    def _normalize_refresh_minutes(
+        value: Any,
+    ) -> int:
+        """자동 갱신 주기 값을 허용된 숫자로 정리한다."""
+        try:
+            minutes = int(value)
+        except (TypeError, ValueError):
+            return DEFAULT_REFRESH_INTERVAL_MINUTES
+
+        if minutes in REFRESH_INTERVAL_OPTIONS:
+            return minutes
+
+        return DEFAULT_REFRESH_INTERVAL_MINUTES
+
+    @staticmethod
+    def _normalize_icon_display_mode(
+        value: Any,
+    ) -> str:
+        """트레이 아이콘 표시 기준을 올바른 값으로 정리한다."""
+        if value in ICON_DISPLAY_OPTIONS:
+            return str(value)
+
+        return DEFAULT_ICON_DISPLAY_MODE
+
+    @staticmethod
+    def _normalize_low_balance_threshold(
+        value: Any,
+    ) -> int:
+        """잔량 부족 알림 기준을 올바른 값으로 정리한다."""
+        try:
+            threshold = int(value)
+        except (TypeError, ValueError):
+            return DEFAULT_LOW_BALANCE_THRESHOLD
+
+        if threshold in LOW_BALANCE_THRESHOLD_OPTIONS:
+            return threshold
+
+        return DEFAULT_LOW_BALANCE_THRESHOLD
+
+    @staticmethod
+    def _get_startup_command() -> str:
+        """현재 실행 형태에 맞는 자동 실행 명령을 만든다."""
+        if getattr(sys, "frozen", False):
+            executable_path = Path(
+                sys.executable
+            ).resolve()
+
+            return f'"{executable_path}"'
+
+        python_path = Path(
+            sys.executable
+        ).resolve()
+
+        pythonw_path = python_path.with_name(
+            "pythonw.exe"
+        )
+
+        if pythonw_path.exists():
+            python_path = pythonw_path
+
+        script_path = Path(__file__).resolve()
+
+        return (
+            f'"{python_path}" '
+            f'"{script_path}"'
+        )
+
+    @staticmethod
+    def _is_startup_enabled() -> bool:
+        """Windows 자동 실행 등록 여부를 확인한다."""
+        try:
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                STARTUP_REGISTRY_PATH,
+            ) as registry_key:
+                value, _ = winreg.QueryValueEx(
+                    registry_key,
+                    STARTUP_VALUE_NAME,
+                )
+
+            return bool(value)
+
+        except (FileNotFoundError, OSError):
+            return False
+
+    @staticmethod
+    def _set_startup_enabled(
+        enabled: bool,
+    ) -> bool:
+        """Windows 자동 실행 등록을 추가하거나 제거한다."""
+        try:
+            with winreg.CreateKey(
+                winreg.HKEY_CURRENT_USER,
+                STARTUP_REGISTRY_PATH,
+            ) as registry_key:
+                if enabled:
+                    winreg.SetValueEx(
+                        registry_key,
+                        STARTUP_VALUE_NAME,
+                        0,
+                        winreg.REG_SZ,
+                        UsageTrayApp._get_startup_command(),
+                    )
+                else:
+                    try:
+                        winreg.DeleteValue(
+                            registry_key,
+                            STARTUP_VALUE_NAME,
+                        )
+                    except FileNotFoundError:
+                        pass
+
+            return True
+
+        except OSError:
+            return False
+
+    @staticmethod
+    def _load_settings() -> dict[str, Any]:
+        """저장된 앱 설정을 읽는다."""
+        try:
+            text = SETTINGS_PATH.read_text(
+                encoding="utf-8"
+            )
+            data = json.loads(text)
+        except (
+            OSError,
+            json.JSONDecodeError,
+        ):
+            return {}
+
+        if not isinstance(data, dict):
+            return {}
+
+        return data
+
+    def _save_settings(self) -> None:
+        """현재 앱 설정을 파일에 저장한다."""
+        self.settings[
+            "auto_refresh_minutes"
+        ] = self.auto_refresh_minutes
+
+        self.settings[
+            "icon_display_mode"
+        ] = self.icon_display_mode
+
+        self.settings[
+            "low_balance_threshold"
+        ] = self.low_balance_threshold
+
+        self.settings[
+            "start_with_windows"
+        ] = self.start_with_windows
+
+        try:
+            SETTINGS_DIRECTORY.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            temporary_path = (
+                SETTINGS_PATH.with_suffix(".tmp")
+            )
+
+            temporary_path.write_text(
+                json.dumps(
+                    self.settings,
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            temporary_path.replace(
+                SETTINGS_PATH
+            )
+
+        except OSError:
+            # 저장 실패가 앱 실행 자체를 막지는 않게 한다.
+            pass
 
     def _create_tray_image(
         self,
@@ -221,16 +476,31 @@ class UsageTrayApp:
             255,
         )
 
-    @staticmethod
     def _select_icon_window(
+        self,
         snapshot: UsageSnapshot,
     ) -> UsageWindow | None:
-        """아이콘에는 주간 한도를 우선 표시한다."""
+        """설정에서 선택한 한도를 트레이 아이콘에 표시한다."""
         windows = snapshot.windows
 
+        preferred_duration = ICON_DISPLAY_OPTIONS[
+            self.icon_display_mode
+        ]
+
+        for usage_window in windows:
+            if (
+                usage_window.duration_mins
+                == preferred_duration
+            ):
+                return usage_window
+
+        # 선택한 한도가 없으면 존재하는 한도를 대신 표시한다.
         for duration_mins in (10_080, 300):
             for usage_window in windows:
-                if (usage_window.duration_mins == duration_mins):
+                if (
+                    usage_window.duration_mins
+                    == duration_mins
+                ):
                     return usage_window
 
         if windows:
@@ -257,6 +527,82 @@ class UsageTrayApp:
                 ),
             )
         )
+
+    def _check_low_balance_alert(
+        self,
+        snapshot: UsageSnapshot,
+    ) -> None:
+        """잔량이 설정값 이하일 때 Windows 알림을 표시한다."""
+        if self.low_balance_threshold <= 0:
+            return
+
+        current_keys: set[
+            tuple[int | None, int | None]
+        ] = set()
+
+        pending_items: list[
+            tuple[
+                tuple[int | None, int | None],
+                str,
+            ]
+        ] = []
+
+        for usage_window in snapshot.windows:
+            reset_timestamp = (
+                int(usage_window.resets_at.timestamp())
+                if usage_window.resets_at is not None
+                else None
+            )
+
+            alert_key = (
+                usage_window.duration_mins,
+                reset_timestamp,
+            )
+            current_keys.add(alert_key)
+
+            if (
+                usage_window.remaining_percent
+                > self.low_balance_threshold
+            ):
+                continue
+
+            if (
+                alert_key
+                in self.low_balance_notified_keys
+            ):
+                continue
+
+            message = (
+                f"{usage_window.label}: "
+                f"{usage_window.remaining_percent:g}% 남음"
+            )
+
+            pending_items.append(
+                (alert_key, message)
+            )
+
+        self.low_balance_notified_keys.intersection_update(
+            current_keys
+        )
+
+        if not pending_items:
+            return
+
+        notification_sent = (
+            self.tray_icon.show_notification(
+                "Codex 사용량 알림",
+                "\n".join(
+                    message
+                    for _, message in pending_items
+                ),
+            )
+        )
+
+        if notification_sent:
+            self.low_balance_notified_keys.update(
+                alert_key
+                for alert_key, _ in pending_items
+            )
 
     def _update_tray_status(
         self,
@@ -362,7 +708,7 @@ class UsageTrayApp:
         else:
             self._show_popup(
                 focus=True,
-                refresh=True,
+                refresh=False,
             )
 
     def _show_popup(
@@ -468,16 +814,39 @@ class UsageTrayApp:
         )
         title_label.pack(side="left")
 
-        status_label = ctk.CTkLabel(
+        settings_button = ctk.CTkButton(
             header,
-            text="●  2분 자동 갱신",
+            text="⚙",
+            width=30,
+            height=30,
+            corner_radius=8,
+            fg_color="transparent",
+            hover_color=CARD_BACKGROUND,
+            text_color=TEXT_SECONDARY,
+            command=self._open_settings,
+            font=ctk.CTkFont(
+                family="Segoe UI Symbol",
+                size=18,
+            ),
+        )
+        settings_button.pack(side="right")
+
+        self.auto_refresh_label = ctk.CTkLabel(
+            header,
+            text=(
+                f"●  {self.auto_refresh_minutes}분 "
+                "자동 갱신"
+            ),
             text_color=GREEN,
             font=ctk.CTkFont(
                 family="맑은 고딕",
                 size=11,
             ),
         )
-        status_label.pack(side="right")
+        self.auto_refresh_label.pack(
+            side="right",
+            padx=(0, 8),
+        )
 
         self.content_frame = ctk.CTkFrame(
             outer_frame,
@@ -490,8 +859,29 @@ class UsageTrayApp:
             pady=(0, 4),
         )
 
-        self.footer_label = ctk.CTkLabel(
+        footer_frame = ctk.CTkFrame(
             outer_frame,
+            fg_color="transparent",
+        )
+        footer_frame.pack(
+            fill="x",
+            padx=18,
+            pady=(0, 13),
+        )
+
+        self.status_label = ctk.CTkLabel(
+            footer_frame,
+            text=f"●  {self.refresh_status_text}",
+            text_color=self.refresh_status_color,
+            font=ctk.CTkFont(
+                family="맑은 고딕",
+                size=10,
+            ),
+        )
+        self.status_label.pack(side="left")
+
+        self.footer_label = ctk.CTkLabel(
+            footer_frame,
             text="",
             text_color=TEXT_SECONDARY,
             font=ctk.CTkFont(
@@ -499,16 +889,408 @@ class UsageTrayApp:
                 size=10,
             ),
         )
-        self.footer_label.pack(
-            anchor="e",
-            padx=18,
-            pady=(0, 13),
-        )
 
+        self.footer_label.pack(side="right")
         self.popup.update_idletasks()
         self._hide_popup_from_taskbar()
         self._apply_windows_rounding()
         self._position_popup()       
+
+    def _open_settings(self) -> None:
+        """설정 창을 열거나 기존 설정 창을 앞으로 가져온다."""
+        if (
+            self.settings_window is not None
+            and self.settings_window.winfo_exists()
+        ):
+            self.settings_window.deiconify()
+            self.settings_window.lift()
+            self.settings_window.focus_force()
+            return
+
+        self.settings_window = ctk.CTkToplevel(
+            self.root
+        )
+        self.settings_window.title("Codex Usage 설정")
+        self.settings_window.resizable(False, False)
+        self.settings_window.configure(
+            fg_color=BACKGROUND
+        )
+        self.settings_window.attributes(
+            "-topmost",
+            True,
+        )
+        self.settings_window.protocol(
+            "WM_DELETE_WINDOW",
+            self._close_settings,
+        )
+
+        width = 360
+        height = 330
+        screen_width = (
+            self.settings_window.winfo_screenwidth()
+        )
+        screen_height = (
+            self.settings_window.winfo_screenheight()
+        )
+
+        x = (screen_width - width) // 2
+        y = (screen_height - height) // 2
+
+        self.settings_window.geometry(
+            f"{width}x{height}+{x}+{y}"
+        )
+
+        title_label = ctk.CTkLabel(
+            self.settings_window,
+            text="설정",
+            text_color=TEXT_PRIMARY,
+            font=ctk.CTkFont(
+                family="맑은 고딕",
+                size=20,
+                weight="bold",
+            ),
+        )
+        title_label.pack(
+            anchor="w",
+            padx=22,
+            pady=(20, 14),
+        )
+
+        refresh_row = ctk.CTkFrame(
+            self.settings_window,
+            height=48,
+            corner_radius=10,
+            fg_color=CARD_BACKGROUND,
+        )
+        refresh_row.pack(
+            fill="x",
+            padx=20,
+            pady=5,
+        )
+        refresh_row.pack_propagate(False)
+
+        refresh_label = ctk.CTkLabel(
+            refresh_row,
+            text="자동 갱신 주기",
+            text_color=TEXT_PRIMARY,
+            font=ctk.CTkFont(
+                family="맑은 고딕",
+                size=12,
+            ),
+        )
+        refresh_label.pack(
+            side="left",
+            padx=14,
+        )
+
+        refresh_menu = ctk.CTkOptionMenu(
+            refresh_row,
+            values=[
+                f"{minutes}분"
+                for minutes in REFRESH_INTERVAL_OPTIONS
+            ],
+            command=self._on_refresh_interval_changed,
+            width=92,
+            height=30,
+            corner_radius=8,
+            fg_color="#3A3C40",
+            button_color="#44464A",
+            button_hover_color="#50535A",
+            dropdown_fg_color=CARD_BACKGROUND,
+            dropdown_hover_color="#3A3C40",
+            text_color=TEXT_PRIMARY,
+            font=ctk.CTkFont(
+                family="맑은 고딕",
+                size=11,
+            ),
+        )
+        refresh_menu.set(
+            f"{self.auto_refresh_minutes}분"
+        )
+        refresh_menu.pack(
+            side="right",
+            padx=12,
+        )
+
+        icon_row = ctk.CTkFrame(
+            self.settings_window,
+            height=48,
+            corner_radius=10,
+            fg_color=CARD_BACKGROUND,
+        )
+        icon_row.pack(
+            fill="x",
+            padx=20,
+            pady=5,
+        )
+        icon_row.pack_propagate(False)
+
+        icon_label = ctk.CTkLabel(
+            icon_row,
+            text="트레이 아이콘 표시 기준",
+            text_color=TEXT_PRIMARY,
+            font=ctk.CTkFont(
+                family="맑은 고딕",
+                size=12,
+            ),
+        )
+        icon_label.pack(
+            side="left",
+            padx=14,
+        )
+
+        icon_menu = ctk.CTkOptionMenu(
+            icon_row,
+            values=list(ICON_DISPLAY_OPTIONS),
+            command=self._on_icon_display_mode_changed,
+            width=92,
+            height=30,
+            corner_radius=8,
+            fg_color="#3A3C40",
+            button_color="#44464A",
+            button_hover_color="#50535A",
+            dropdown_fg_color=CARD_BACKGROUND,
+            dropdown_hover_color="#3A3C40",
+            text_color=TEXT_PRIMARY,
+            font=ctk.CTkFont(
+                family="맑은 고딕",
+                size=11,
+            ),
+        )
+        icon_menu.set(self.icon_display_mode)
+        icon_menu.pack(
+            side="right",
+            padx=12,
+        )
+
+        alert_row = ctk.CTkFrame(
+            self.settings_window,
+            height=48,
+            corner_radius=10,
+            fg_color=CARD_BACKGROUND,
+        )
+        alert_row.pack(
+            fill="x",
+            padx=20,
+            pady=5,
+        )
+        alert_row.pack_propagate(False)
+
+        alert_label = ctk.CTkLabel(
+            alert_row,
+            text="잔량 부족 알림",
+            text_color=TEXT_PRIMARY,
+            font=ctk.CTkFont(
+                family="맑은 고딕",
+                size=12,
+            ),
+        )
+        alert_label.pack(
+            side="left",
+            padx=14,
+        )
+
+        alert_menu = ctk.CTkOptionMenu(
+            alert_row,
+            values=[
+                "꺼짐",
+                "10% 이하",
+                "20% 이하",
+                "30% 이하",
+            ],
+            command=(
+                self._on_low_balance_threshold_changed
+            ),
+            width=92,
+            height=30,
+            corner_radius=8,
+            fg_color="#3A3C40",
+            button_color="#44464A",
+            button_hover_color="#50535A",
+            dropdown_fg_color=CARD_BACKGROUND,
+            dropdown_hover_color="#3A3C40",
+            text_color=TEXT_PRIMARY,
+            font=ctk.CTkFont(
+                family="맑은 고딕",
+                size=11,
+            ),
+        )
+
+        if self.low_balance_threshold == 0:
+            alert_menu.set("꺼짐")
+        else:
+            alert_menu.set(
+                f"{self.low_balance_threshold}% 이하"
+            )
+
+        alert_menu.pack(
+            side="right",
+            padx=12,
+        )
+
+        startup_row = ctk.CTkFrame(
+            self.settings_window,
+            height=48,
+            corner_radius=10,
+            fg_color=CARD_BACKGROUND,
+        )
+        startup_row.pack(
+            fill="x",
+            padx=20,
+            pady=5,
+        )
+        startup_row.pack_propagate(False)
+
+        startup_label = ctk.CTkLabel(
+            startup_row,
+            text="Windows 시작 시 자동 실행",
+            text_color=TEXT_PRIMARY,
+            font=ctk.CTkFont(
+                family="맑은 고딕",
+                size=12,
+            ),
+        )
+        startup_label.pack(
+            side="left",
+            padx=14,
+        )
+
+        self.startup_switch = ctk.CTkSwitch(
+            startup_row,
+            text="",
+            width=48,
+            command=self._on_startup_changed,
+            progress_color=GREEN,
+            button_color=TEXT_PRIMARY,
+            button_hover_color="#D8D8D8",
+        )
+        self.startup_switch.pack(
+            side="right",
+            padx=14,
+        )
+
+        if self.start_with_windows:
+            self.startup_switch.select()
+        else:
+            self.startup_switch.deselect()
+
+    def _on_icon_display_mode_changed(
+        self,
+        selected_value: str,
+    ) -> None:
+        """트레이 아이콘에 표시할 한도를 변경한다."""
+        mode = self._normalize_icon_display_mode(
+            selected_value
+        )
+
+        if mode == self.icon_display_mode:
+            return
+
+        self.icon_display_mode = mode
+        self._save_settings()
+
+        if self.latest_snapshot is not None:
+            self._update_tray_status(
+                self.latest_snapshot
+            )
+
+    def _on_low_balance_threshold_changed(
+        self,
+        selected_value: str,
+    ) -> None:
+        """잔량 부족 알림 기준을 변경한다."""
+        if selected_value == "꺼짐":
+            threshold = 0
+        else:
+            threshold = int(
+                selected_value.split("%", 1)[0]
+            )
+
+        threshold = (
+            self._normalize_low_balance_threshold(
+                threshold
+            )
+        )
+
+        if threshold == self.low_balance_threshold:
+            return
+
+        self.low_balance_threshold = threshold
+        self._save_settings()
+
+        if threshold == 0:
+            self.low_balance_notified_keys.clear()
+            return
+
+        if self.latest_snapshot is not None:
+            self._check_low_balance_alert(
+                self.latest_snapshot
+            )
+
+    def _on_refresh_interval_changed(
+        self,
+        selected_value: str,
+    ) -> None:
+        """선택한 자동 갱신 주기를 즉시 적용한다."""
+        minutes = self._normalize_refresh_minutes(
+            selected_value.removesuffix("분")
+        )
+
+        if minutes == self.auto_refresh_minutes:
+            return
+
+        self.auto_refresh_minutes = minutes
+
+        self._save_settings()
+        self._update_auto_refresh_label()
+
+        # 조회 중이 아니라면 현재 예약을 새 주기로 교체한다.
+        if (
+            not self.loading
+            and self.latest_snapshot is not None
+        ):
+            self._schedule_auto_refresh()
+
+    def _update_auto_refresh_label(self) -> None:
+        """팝업 상단의 자동 갱신 문구를 바꾼다."""
+        if self.auto_refresh_label is None:
+            return
+
+        self.auto_refresh_label.configure(
+            text=(
+                f"●  {self.auto_refresh_minutes}분 "
+                "자동 갱신"
+            )
+        )
+
+    def _on_startup_changed(self) -> None:
+        """Windows 자동 실행 설정을 즉시 적용한다."""
+        if self.startup_switch is None:
+            return
+
+        requested_enabled = bool(
+            self.startup_switch.get()
+        )
+
+        if not self._set_startup_enabled(
+            requested_enabled
+        ):
+            if self.start_with_windows:
+                self.startup_switch.select()
+            else:
+                self.startup_switch.deselect()
+
+            return
+
+        self.start_with_windows = requested_enabled
+        self._save_settings()
+
+    def _close_settings(self) -> None:
+        """설정 창을 닫는다."""
+        if self.settings_window is not None:
+            self.settings_window.destroy()
+            self.settings_window = None
+            self.startup_switch = None
 
     def _hide_popup_from_taskbar(self) -> None:
         """팝업이 작업표시줄과 Alt+Tab에 나타나지 않게 한다."""
@@ -942,6 +1724,11 @@ class UsageTrayApp:
         self.loading = True
         self._cancel_auto_refresh()
 
+        self._set_refresh_status(
+            "갱신 중",
+            ORANGE,
+        )
+
         if show_loading:
             self._clear_content()
 
@@ -1012,8 +1799,14 @@ class UsageTrayApp:
             )
             return
 
+        self._set_refresh_status(
+            "정상",
+            GREEN,
+        )
+
         self.latest_snapshot = snapshot
         self._update_tray_status(snapshot)
+        self._check_low_balance_alert(snapshot)
 
         if schedule_refresh:
             self._schedule_auto_refresh()
@@ -1138,6 +1931,11 @@ class UsageTrayApp:
         """조회 오류를 아이콘과 팝업에 표시한다."""
         self.loading = False
 
+        self._set_refresh_status(
+            "최근 갱신 실패",
+            RED,
+        )
+
         if self.latest_snapshot is None:
             self._set_tray_error()
         else:
@@ -1180,17 +1978,38 @@ class UsageTrayApp:
                 text="조회 실패"
             )
 
+    def _set_refresh_status(
+        self,
+        text: str,
+        color: str,
+    ) -> None:
+        """현재 갱신 상태를 저장하고 팝업에 표시한다."""
+        self.refresh_status_text = text
+        self.refresh_status_color = color
+
+        if self.status_label is not None:
+            self.status_label.configure(
+                text=f"●  {text}",
+                text_color=color,
+            )
+
     def _schedule_auto_refresh(self) -> None:
         """팝업 상태와 관계없이 다음 갱신을 예약한다."""
         self._cancel_auto_refresh()
 
+        refresh_interval_ms = (
+            self.auto_refresh_minutes
+            * 60
+            * 1000
+        )
+
         self.next_refresh_at = (
             time.monotonic()
-            + AUTO_REFRESH_MS / 1000
+            + refresh_interval_ms / 1000
         )
 
         self.auto_refresh_job = self.root.after(
-            AUTO_REFRESH_MS,
+            refresh_interval_ms,
             self._auto_refresh,
         )
 
@@ -1354,6 +2173,9 @@ class UsageTrayApp:
 
         if self.popup is not None:
             self.popup.destroy()
+
+        if self.settings_window is not None:
+            self.settings_window.destroy()
 
         self.root.destroy()
 
