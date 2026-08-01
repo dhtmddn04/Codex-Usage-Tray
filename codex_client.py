@@ -51,6 +51,7 @@ class UsageSnapshot:
 
     primary: UsageWindow | None
     secondary: UsageWindow | None
+    plan_type: str | None
     fetched_at: datetime
 
     @property
@@ -251,9 +252,17 @@ def get_usage() -> UsageSnapshot:
         if not isinstance(rate_limits, dict):
             raise CodexClientError("rateLimits 응답 형식이 올바르지 않습니다.")
 
+        plan_type_value = rate_limits.get("planType")
+        plan_type = (
+            plan_type_value
+            if isinstance(plan_type_value, str)
+            else None
+        )
+
         return UsageSnapshot(
             primary=_parse_window("primary", rate_limits.get("primary")),
             secondary=_parse_window("secondary", rate_limits.get("secondary")),
+            plan_type=plan_type,
             fetched_at=datetime.now(),
         )
     finally: # 어떤 경우에도 App Server 종료

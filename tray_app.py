@@ -1017,8 +1017,29 @@ class UsageTrayApp:
 
         self._clear_content()
 
-        # 한도 카드 개수에 맞춰 창 높이 조절
-        self.popup_height = 120 + len(windows) * 118
+        plan_name = (
+            f"ChatGPT {snapshot.plan_type.capitalize()}"
+            if snapshot.plan_type
+            else "요금제 정보 없음"
+        )
+
+        plan_label = ctk.CTkLabel(
+            self.content_frame,
+            text=plan_name,
+            text_color=TEXT_SECONDARY,
+            anchor="w",
+            font=ctk.CTkFont(
+                family="맑은 고딕",
+                size=11,
+            ),
+        )
+        plan_label.pack(
+            fill="x",
+            pady=(0, 8),
+        )
+
+        # 요금제 표시와 한도 카드 개수에 맞춰 창 높이 조절
+        self.popup_height = 146 + len(windows) * 118
         self._position_popup()
 
         for usage_window in windows:
