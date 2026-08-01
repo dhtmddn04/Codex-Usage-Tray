@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import queue
 import sys
+import tkinter as tk
 import threading
 import time
 import winreg
@@ -15,6 +16,7 @@ import customtkinter as ctk
 from PIL import Image, ImageDraw, ImageFont
 
 from native_tray import NativeTrayIcon
+from usage_history import (UsageHistoryPoint, load_usage_history, save_usage_snapshot,)
 
 from codex_client import (
     CodexClientError,
@@ -80,6 +82,10 @@ TEXT_SECONDARY = "#A1A3A8"
 GREEN = "#10A37F"
 ORANGE = "#F0A43C"
 RED = "#E25555"
+
+HISTORY_GRAPH_DAYS = 7
+HISTORY_GRAPH_MAX_POINTS = 48
+HISTORY_GRAPH_HEIGHT = 130
 
 
 # Tk 좌표와 Win32 트레이 좌표가 다른 DPI 환경에서도
@@ -726,6 +732,7 @@ class UsageTrayApp:
                 command == "usage_result"
                 and isinstance(data, UsageSnapshot)
             ):
+                save_usage_snapshot(data)
                 self._display_usage(data)
 
             elif command == "usage_error":
@@ -1891,7 +1898,7 @@ class UsageTrayApp:
         )
 
         # 요금제 표시와 한도 카드 개수에 맞춰 창 높이 조절
-        self.popup_height = 146 + len(windows) * 118
+        self.popup_height = 332 + len(windows) * 118
         self._position_popup()
 
         for usage_window in windows:
@@ -1976,7 +1983,257 @@ class UsageTrayApp:
                 pady=(0, 11),
             )
 
+        graph_window = self._select_icon_window(
+            snapshot
+        )
+
+        if graph_window is not None:
+            self._create_history_graph(
+                graph_window
+            )
+
         self._update_refresh_footer()
+
+    def _create_history_graph(
+        self,
+        usage_window: UsageWindow,
+    ) -> None:
+        """최근 잔여 사용량 기록을 선 그래프로 표시한다."""
+        if self.content_frame is None:
+            return
+
+        graph_card = ctk.CTkFrame(
+            self.content_frame,
+            corner_radius=14,
+            fg_color=CARD_BACKGROUND,
+        )
+        graph_card.pack(
+            fill="x",
+            pady=(0, 9),
+        )
+
+        title_row = ctk.CTkFrame(
+            graph_card,
+            fg_color="transparent",
+        )
+        title_row.pack(
+            fill="x",
+            padx=14,
+            pady=(11, 3),
+        )
+
+        title_label = ctk.CTkLabel(
+            title_row,
+            text="최근 사용 추이",
+            text_color=TEXT_PRIMARY,
+            font=ctk.CTkFont(
+                family="맑은 고딕",
+                size=12,
+                weight="bold",
+            ),
+        )
+        title_label.pack(side="left")
+
+        period_label = ctk.CTkLabel(
+            title_row,
+            text=usage_window.label,
+            text_color=TEXT_SECONDARY,
+            font=ctk.CTkFont(
+                family="맑은 고딕",
+                size=9,
+            ),
+        )
+        period_label.pack(side="right")
+
+        history_points = load_usage_history(
+            usage_window.duration_mins or 0,
+            days=HISTORY_GRAPH_DAYS,
+            max_points=HISTORY_GRAPH_MAX_POINTS,
+        )
+
+        graph_canvas = tk.Canvas(
+            graph_card,
+            height=HISTORY_GRAPH_HEIGHT,
+            background=CARD_BACKGROUND,
+            highlightthickness=0,
+            borderwidth=0,
+        )
+        graph_canvas.pack(
+            fill="x",
+            padx=10,
+            pady=(0, 10),
+        )
+
+        graph_canvas.after(
+            20,
+            lambda: self._draw_history_graph(
+                graph_canvas,
+                history_points,
+            ),
+        )
+
+    def _draw_history_graph(
+        self,
+        canvas: tk.Canvas,
+        points: tuple[UsageHistoryPoint, ...],
+    ) -> None:
+        """Canvas에 잔여 사용량 선 그래프를 그린다."""
+        if not canvas.winfo_exists():
+            return
+
+        canvas.delete("all")
+
+        width = max(
+            canvas.winfo_width(),
+            280,
+        )
+        height = HISTORY_GRAPH_HEIGHT
+
+        left = 34
+        right = width - 8
+        top = 8
+        bottom = height - 24
+
+        for percent in (100, 75, 50, 25, 0):
+            y = top + (
+                100 - percent
+            ) / 100 * (bottom - top)
+
+            canvas.create_line(
+                left,
+                y,
+                right,
+                y,
+                fill="#3A3C40",
+                width=1,
+            )
+
+            canvas.create_text(
+                left - 5,
+                y,
+                text=f"{percent}%",
+                fill=TEXT_SECONDARY,
+                anchor="e",
+                font=("맑은 고딕", 7),
+            )
+
+        if not points:
+            canvas.create_text(
+                (left + right) / 2,
+                (top + bottom) / 2,
+                text=(
+                    "기록이 쌓이면 "
+                    "그래프가 표시됩니다."
+                ),
+                fill=TEXT_SECONDARY,
+                font=("맑은 고딕", 9),
+            )
+            return
+
+        start_time = points[0].recorded_at
+        end_time = points[-1].recorded_at
+
+        total_seconds = max(
+            1.0,
+            (
+                end_time
+                - start_time
+            ).total_seconds(),
+        )
+
+        coordinates: list[float] = []
+
+        for point in points:
+            elapsed_seconds = (
+                point.recorded_at
+                - start_time
+            ).total_seconds()
+
+            x = left + (
+                elapsed_seconds
+                / total_seconds
+            ) * (right - left)
+
+            y = top + (
+                100
+                - point.remaining_percent
+            ) / 100 * (bottom - top)
+
+            coordinates.extend((x, y))
+
+        if len(points) == 1:
+            x, y = coordinates
+
+            canvas.create_oval(
+                x - 3,
+                y - 3,
+                x + 3,
+                y + 3,
+                fill=GREEN,
+                outline="",
+            )
+
+        else:
+            canvas.create_line(
+                *coordinates,
+                fill=GREEN,
+                width=2,
+            )
+
+            marker_step = max(
+                1,
+                len(points) // 10,
+            )
+
+            for index in range(
+                0,
+                len(points),
+                marker_step,
+            ):
+                x = coordinates[index * 2]
+                y = coordinates[index * 2 + 1]
+
+                canvas.create_oval(
+                    x - 2,
+                    y - 2,
+                    x + 2,
+                    y + 2,
+                    fill=GREEN,
+                    outline="",
+                )
+
+        same_day = (
+            start_time.date()
+            == end_time.date()
+        )
+
+        time_format = (
+            "%H:%M"
+            if same_day
+            else "%m/%d"
+        )
+
+        canvas.create_text(
+            left,
+            height - 8,
+            text=start_time.strftime(
+                time_format
+            ),
+            fill=TEXT_SECONDARY,
+            anchor="w",
+            font=("맑은 고딕", 7),
+        )
+
+        canvas.create_text(
+            right,
+            height - 8,
+            text=end_time.strftime(
+                time_format
+            ),
+            fill=TEXT_SECONDARY,
+            anchor="e",
+            font=("맑은 고딕", 7),
+        )
 
 
     def _display_error(self, message: str) -> None:
