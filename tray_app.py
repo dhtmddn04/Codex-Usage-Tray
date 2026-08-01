@@ -85,6 +85,7 @@ RED = "#E25555"
 # Tk 좌표와 Win32 트레이 좌표가 다른 DPI 환경에서도
 # 같은 물리 픽셀 좌표계를 사용하기 위한 Win32 함수들
 _USER32 = ctypes.WinDLL("user32", use_last_error=True)
+_KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
 _USER32.GetParent.argtypes = [wintypes.HWND]
 _USER32.GetParent.restype = wintypes.HWND
@@ -110,6 +111,17 @@ _USER32.SetWindowPos.argtypes = [
     wintypes.UINT,
 ]
 _USER32.SetWindowPos.restype = wintypes.BOOL
+_KERNEL32.CreateMutexW.argtypes = [
+    ctypes.c_void_p,
+    wintypes.BOOL,
+    wintypes.LPCWSTR,
+]
+_KERNEL32.CreateMutexW.restype = wintypes.HANDLE
+
+_KERNEL32.CloseHandle.argtypes = [
+    wintypes.HANDLE,
+]
+_KERNEL32.CloseHandle.restype = wintypes.BOOL
 
 try:
     _USER32.GetDpiForWindow.argtypes = [wintypes.HWND]
@@ -121,6 +133,46 @@ SWP_NOSIZE = 0x0001
 SWP_NOZORDER = 0x0004
 SWP_NOACTIVATE = 0x0010
 
+ERROR_ALREADY_EXISTS = 183
+
+SINGLE_INSTANCE_MUTEX_NAME = (
+    r"Local\CodexUsageTray.SingleInstance"
+)
+
+def _acquire_single_instance_mutex() -> int | None:
+    """첫 번째 앱 인스턴스만 실행되도록 Mutex를 만든다."""
+    ctypes.set_last_error(0)
+
+    mutex_handle = _KERNEL32.CreateMutexW(
+        None,
+        False,
+        SINGLE_INSTANCE_MUTEX_NAME,
+    )
+
+    if not mutex_handle:
+        raise ctypes.WinError(
+            ctypes.get_last_error()
+        )
+
+    if (
+        ctypes.get_last_error()
+        == ERROR_ALREADY_EXISTS
+    ):
+        _KERNEL32.CloseHandle(
+            mutex_handle
+        )
+        return None
+
+    return int(mutex_handle)
+
+
+def _close_single_instance_mutex(
+    mutex_handle: int,
+) -> None:
+    """앱 종료 시 Mutex 핸들을 닫는다."""
+    _KERNEL32.CloseHandle(
+        mutex_handle
+    )
 
 class UsageTrayApp:
     """Codex 사용량 트레이 애플리케이션."""
@@ -2201,8 +2253,21 @@ class UsageTrayApp:
 
 
 def main() -> None:
-    app = UsageTrayApp()
-    app.run()
+    mutex_handle = (
+        _acquire_single_instance_mutex()
+    )
+
+    # 이미 실행 중이면 두 번째 앱은 바로 종료한다.
+    if mutex_handle is None:
+        return
+
+    try:
+        app = UsageTrayApp()
+        app.run()
+    finally:
+        _close_single_instance_mutex(
+            mutex_handle
+        )
 
 
 if __name__ == "__main__":
