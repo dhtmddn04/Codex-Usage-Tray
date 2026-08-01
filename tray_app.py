@@ -107,6 +107,8 @@ class UsageTrayApp:
         self.popup_height = INITIAL_POPUP_HEIGHT
         self.loading = False
         self.auto_refresh_job: str | None = None
+        self.next_refresh_at: float | None = None
+        self.refresh_countdown_job: str | None = None
         self.latest_snapshot: UsageSnapshot | None = None
 
         self.popup_opened_by_hover = False
@@ -387,7 +389,8 @@ class UsageTrayApp:
 
         if self.latest_snapshot is not None:
             self._display_usage(
-                self.latest_snapshot
+                self.latest_snapshot,
+                schedule_refresh=False,
             )
 
             if refresh:
@@ -993,6 +996,8 @@ class UsageTrayApp:
     def _display_usage(
         self,
         snapshot: UsageSnapshot,
+        *,
+        schedule_refresh: bool = True
     ) -> None:
         """조회 결과를 아이콘과 팝업에 반영한다."""
         self.loading = False
@@ -1009,7 +1014,9 @@ class UsageTrayApp:
 
         self.latest_snapshot = snapshot
         self._update_tray_status(snapshot)
-        self._schedule_auto_refresh()
+
+        if schedule_refresh:
+            self._schedule_auto_refresh()
 
         # 팝업을 아직 만든 적이 없어도 아이콘 갱신은 완료된다.
         if self.content_frame is None:
@@ -1124,14 +1131,7 @@ class UsageTrayApp:
                 pady=(0, 11),
             )
 
-        if self.footer_label is not None:
-            fetched_text = snapshot.fetched_at.strftime(
-                "%H:%M:%S"
-            )
-
-            self.footer_label.configure(
-                text=f"마지막 갱신 {fetched_text}"
-            )
+        self._update_refresh_footer()
 
 
     def _display_error(self, message: str) -> None:
@@ -1184,14 +1184,25 @@ class UsageTrayApp:
         """팝업 상태와 관계없이 다음 갱신을 예약한다."""
         self._cancel_auto_refresh()
 
+        self.next_refresh_at = (
+            time.monotonic()
+            + AUTO_REFRESH_MS / 1000
+        )
+
         self.auto_refresh_job = self.root.after(
             AUTO_REFRESH_MS,
             self._auto_refresh,
         )
 
+        self._restart_refresh_countdown()
+
     def _auto_refresh(self) -> None:
         """예약된 자동 갱신을 실행한다."""
         self.auto_refresh_job = None
+        self.next_refresh_at = None
+
+        self._cancel_refresh_countdown()
+        self._update_refresh_footer()
         self._refresh_usage(show_loading=False)
 
     def _cancel_auto_refresh(self) -> None:
@@ -1203,6 +1214,77 @@ class UsageTrayApp:
             self.auto_refresh_job
         )
         self.auto_refresh_job = None
+
+    def _restart_refresh_countdown(self) -> None:
+        """자동 갱신 카운트다운을 처음부터 시작한다."""
+        self._cancel_refresh_countdown()
+        self._update_refresh_countdown()
+
+    def _update_refresh_countdown(self) -> None:
+        """다음 자동 갱신까지 남은 시간을 1초마다 갱신한다."""
+        self.refresh_countdown_job = None
+        self._update_refresh_footer()
+
+        if self.next_refresh_at is None:
+            return
+
+        if time.monotonic() >= self.next_refresh_at:
+            return
+
+        self.refresh_countdown_job = self.root.after(
+            1000,
+            self._update_refresh_countdown,
+        )
+
+    def _cancel_refresh_countdown(self) -> None:
+        """실행 중인 카운트다운 갱신을 취소한다."""
+        if self.refresh_countdown_job is None:
+            return
+
+        self.root.after_cancel(
+            self.refresh_countdown_job
+        )
+        self.refresh_countdown_job = None
+
+    def _update_refresh_footer(self) -> None:
+        """다음 갱신 시간과 마지막 갱신 시각을 표시한다."""
+        if self.footer_label is None:
+            return
+
+        if self.next_refresh_at is None:
+            countdown_text = "--:--"
+        else:
+            remaining_seconds = max(
+                0,
+                int(
+                    self.next_refresh_at
+                    - time.monotonic()
+                    + 0.999
+                ),
+            )
+            minutes, seconds = divmod(
+                remaining_seconds,
+                60,
+            )
+            countdown_text = (
+                f"{minutes:02d}:{seconds:02d}"
+            )
+
+        if self.latest_snapshot is None:
+            fetched_text = "--:--:--"
+        else:
+            fetched_text = (
+                self.latest_snapshot.fetched_at.strftime(
+                    "%H:%M:%S"
+                )
+            )
+
+        self.footer_label.configure(
+            text=(
+                f"다음 갱신 {countdown_text}"
+                f"  ·  마지막 갱신 {fetched_text}"
+            )
+        )
 
     @staticmethod
     def _get_usage_color(
@@ -1267,6 +1349,7 @@ class UsageTrayApp:
     def _quit_app(self) -> None:
         """트레이 아이콘과 GUI를 모두 종료한다."""
         self._cancel_auto_refresh()
+        self._cancel_refresh_countdown()
         self.tray_icon.stop()
 
         if self.popup is not None:
