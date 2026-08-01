@@ -1,0 +1,25 @@
+# Python 캐시
+__pycache__/
+*.py[cod]
+
+# 가상환경
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# 운영체제 파일
+.DS_Store
+Thumbs.db
+
+# 빌드 결과
+build/
+dist/
+*.spec
+
+# 로그와 임시 파일
+*.log
+*.tmp
