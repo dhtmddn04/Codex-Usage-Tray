@@ -222,6 +222,7 @@ class UsageTrayApp:
         self.popup: ctk.CTkToplevel | None = None
         self.settings_window: ctk.CTkToplevel | None = None
         self.startup_switch: ctk.CTkSwitch | None = None
+        self.outer_frame: ctk.CTkFrame | None = None
         self.content_frame: ctk.CTkFrame | None = None
         self.footer_label: ctk.CTkLabel | None = None
         self.auto_refresh_label: ctk.CTkLabel | None = None
@@ -851,6 +852,8 @@ class UsageTrayApp:
             pady=0,
         )
 
+        self.outer_frame = outer_frame
+
         header = ctk.CTkFrame(
             outer_frame,
             fg_color="transparent",
@@ -912,8 +915,7 @@ class UsageTrayApp:
             fg_color="transparent",
         )
         self.content_frame.pack(
-            fill="both",
-            expand=True,
+            fill="x",
             padx=16,
             pady=(0, 4),
         )
@@ -1897,10 +1899,6 @@ class UsageTrayApp:
             pady=(0, 8),
         )
 
-        # 요금제 표시와 한도 카드 개수에 맞춰 창 높이 조절
-        self.popup_height = 332 + len(windows) * 118
-        self._position_popup()
-
         for usage_window in windows:
             remaining = usage_window.remaining_percent
             usage_color = self._get_usage_color(
@@ -1993,6 +1991,11 @@ class UsageTrayApp:
             )
 
         self._update_refresh_footer()
+
+        if self.popup is not None:
+            self.popup.after_idle(
+                self._resize_popup_to_content
+            )
 
     def _create_history_graph(
         self,
@@ -2235,6 +2238,35 @@ class UsageTrayApp:
             font=("맑은 고딕", 7),
         )
 
+    def _resize_popup_to_content(self) -> None:
+        """모든 내부 위젯 배치가 끝난 뒤 팝업 높이를 조절한다."""
+        if (
+            self.popup is None
+            or self.outer_frame is None
+        ):
+            return
+
+        self.outer_frame.update_idletasks()
+
+        # winfo_reqheight()는 이미 화면 배율이 적용된 값이다.
+        scaled_height = (
+            self.outer_frame.winfo_reqheight()
+        )
+
+        # geometry()에서 다시 배율이 적용되므로
+        # 논리적인 창 크기로 되돌린다.
+        requested_height = (
+            self.popup._reverse_window_scaling(
+                scaled_height
+            )
+        )
+
+        self.popup_height = max(
+            INITIAL_POPUP_HEIGHT,
+            requested_height + 2,
+        )
+
+        self._position_popup()
 
     def _display_error(self, message: str) -> None:
         """조회 오류를 아이콘과 팝업에 표시한다."""

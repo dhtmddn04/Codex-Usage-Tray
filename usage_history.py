@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from codex_client import UsageSnapshot
@@ -17,6 +17,11 @@ HISTORY_PATH = (
     HISTORY_DIRECTORY
     / "usage_history.jsonl"
 )
+
+HISTORY_RETENTION_DAYS = 14
+HISTORY_MAX_RECORDS = 25_000
+
+_last_cleanup_date: date | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,10 +78,143 @@ def save_usage_snapshot(
                 + "\n"
             )
 
+        _cleanup_history_if_needed()
+
         return True
 
     except OSError:
         # 기록 실패가 앱의 사용량 갱신을 막지는 않게 한다.
+        return False
+
+def _cleanup_history_if_needed() -> None:
+    """하루에 한 번만 오래된 기록을 정리한다."""
+    global _last_cleanup_date
+
+    today = datetime.now().date()
+
+    if _last_cleanup_date == today:
+        return
+
+    if cleanup_usage_history():
+        _last_cleanup_date = today
+
+
+def cleanup_usage_history(
+    *,
+    retention_days: int = HISTORY_RETENTION_DAYS,
+    max_records: int = HISTORY_MAX_RECORDS,
+) -> bool:
+    """오래된 기록과 최대 개수를 넘는 기록을 제거한다."""
+    cutoff = datetime.now() - timedelta(
+        days=max(1, retention_days)
+    )
+
+    max_records = max(
+        1,
+        max_records,
+    )
+
+    try:
+        lines = HISTORY_PATH.read_text(
+            encoding="utf-8"
+        ).splitlines()
+
+    except FileNotFoundError:
+        return True
+
+    except OSError:
+        return False
+
+    valid_records: list[
+        tuple[datetime, str]
+    ] = []
+
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        if not isinstance(record, dict):
+            continue
+
+        recorded_at_value = record.get(
+            "recorded_at"
+        )
+
+        if not isinstance(
+            recorded_at_value,
+            str,
+        ):
+            continue
+
+        try:
+            recorded_at = datetime.fromisoformat(
+                recorded_at_value
+            )
+        except ValueError:
+            continue
+
+        if recorded_at < cutoff:
+            continue
+
+        valid_records.append(
+            (
+                recorded_at,
+                line,
+            )
+        )
+
+    valid_records.sort(
+        key=lambda item: item[0]
+    )
+
+    if len(valid_records) > max_records:
+        valid_records = valid_records[
+            -max_records:
+        ]
+
+    cleaned_lines = [
+        line
+        for _, line in valid_records
+    ]
+
+    # 정리할 내용이 없다면 파일을 다시 쓰지 않는다.
+    if cleaned_lines == lines:
+        return True
+
+    if cleaned_lines:
+        cleaned_text = (
+            "\n".join(cleaned_lines)
+            + "\n"
+        )
+    else:
+        cleaned_text = ""
+
+    temporary_path = HISTORY_PATH.with_name(
+        f"{HISTORY_PATH.name}.tmp"
+    )
+
+    try:
+        temporary_path.write_text(
+            cleaned_text,
+            encoding="utf-8",
+        )
+
+        temporary_path.replace(
+            HISTORY_PATH
+        )
+
+        return True
+
+    except OSError:
+        try:
+            temporary_path.unlink(
+                missing_ok=True
+            )
+        except OSError:
+            pass
+
         return False
 
 
