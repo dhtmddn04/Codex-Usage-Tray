@@ -26,7 +26,7 @@ from codex_client import (
 )
 
 
-POPUP_WIDTH = 340
+POPUP_WIDTH = 500
 INITIAL_POPUP_HEIGHT = 220
 TASKBAR_GAP = 72
 
@@ -224,9 +224,27 @@ class UsageTrayApp:
         self.startup_switch: ctk.CTkSwitch | None = None
         self.outer_frame: ctk.CTkFrame | None = None
         self.content_frame: ctk.CTkFrame | None = None
-        self.footer_label: ctk.CTkLabel | None = None
+        self.next_refresh_value_label: (
+            ctk.CTkLabel | None
+        ) = None
+
+        self.last_refresh_value_label: (
+            ctk.CTkLabel | None
+        ) = None
+
         self.auto_refresh_label: ctk.CTkLabel | None = None
-        self.settings_summary_label: ctk.CTkLabel | None = None
+
+        self.icon_summary_value_label: (
+            ctk.CTkLabel | None
+        ) = None
+
+        self.alert_summary_value_label: (
+            ctk.CTkLabel | None
+        ) = None
+
+        self.startup_summary_value_label: (
+            ctk.CTkLabel | None
+        ) = None
 
         self.status_label: ctk.CTkLabel | None = None
         self.refresh_status_text = "대기"
@@ -778,27 +796,29 @@ class UsageTrayApp:
         focus: bool,
         refresh: bool,
     ) -> None:
-        """기존 상세 팝업을 표시한다."""
-        if self.popup is None or not self.popup.winfo_exists():
+        """기존 상세 팝업을 깜빡임 없이 표시한다."""
+        popup_created = (
+            self.popup is None
+            or not self.popup.winfo_exists()
+        )
+
+        if popup_created:
             self._build_popup()
-        else:
-            self.popup.deiconify()
 
-        self._position_popup()
-        self.popup.lift()
-
-        if focus:
-            self.popup_opened_by_hover = False
-            self.popup.after(
-                20,
-                self.popup.focus_force,
-            )
+        if self.popup is None:
+            return
 
         if self.latest_snapshot is not None:
-            self._display_usage(
-                self.latest_snapshot,
-                schedule_refresh=False,
-            )
+            # 새 팝업을 만든 경우에만 내용을 처음 생성한다.
+            # 기존 팝업은 숨겨져 있던 내용을 그대로 사용한다.
+            if popup_created:
+                self._display_usage(
+                    self.latest_snapshot,
+                    schedule_refresh=False,
+                )
+
+                # 화면에 표시하기 전에 최종 크기를 확정한다.
+                self._resize_popup_to_content()
 
             if refresh:
                 self._refresh_usage(
@@ -809,9 +829,23 @@ class UsageTrayApp:
                 show_loading=True
             )
 
+        self._position_popup()
+        self.popup.deiconify()
+        self.popup.lift()
+
+        if focus:
+            self.popup_opened_by_hover = False
+            self.popup.after(
+                20,
+                self.popup.focus_force,
+            )
+
     def _build_popup(self) -> None:
         """제목 표시줄이 없는 팝오버 창을 만든다."""
         self.popup = ctk.CTkToplevel(self.root)
+
+        # 내부 UI 구성이 끝나기 전에는 화면에 표시하지 않는다.
+        self.popup.withdraw()
 
         self.popup.title("Codex Usage")
         self.popup.resizable(False, False)
@@ -921,126 +955,54 @@ class UsageTrayApp:
             pady=(0, 4),
         )
 
-        settings_summary_frame = ctk.CTkFrame(
-            outer_frame,
-            corner_radius=12,
-            fg_color=CARD_BACKGROUND,
-        )
-        settings_summary_frame.pack(
-            fill="x",
-            padx=16,
-            pady=(0, 9),
-        )
-
-        settings_summary_frame.grid_columnconfigure(
-            1,
-            weight=1,
-        )
-
-        settings_title_label = ctk.CTkLabel(
-            settings_summary_frame,
-            text="설정",
-            text_color=TEXT_PRIMARY,
-            font=ctk.CTkFont(
-                family="맑은 고딕",
-                size=11,
-                weight="bold",
-            ),
-        )
-        settings_title_label.grid(
-            row=0,
-            column=0,
-            padx=(14, 8),
-            pady=11,
-            sticky="w",
-        )
-
-        self.settings_summary_label = ctk.CTkLabel(
-            settings_summary_frame,
-            text=self._get_settings_summary_text(),
-            text_color=TEXT_SECONDARY,
-            anchor="e",
-            justify="right",
-            wraplength=220,
-            font=ctk.CTkFont(
-                family="맑은 고딕",
-                size=10,
-            ),
-        )
-        self.settings_summary_label.grid(
-            row=0,
-            column=1,
-            padx=(0, 14),
-            pady=11,
-            sticky="e",
-        )
-
-        footer_frame = ctk.CTkFrame(
-            outer_frame,
-            fg_color="transparent",
-        )
-        footer_frame.pack(
-            fill="x",
-            padx=18,
-            pady=(0, 13),
-        )
-
-        self.status_label = ctk.CTkLabel(
-            footer_frame,
-            text=f"●  {self.refresh_status_text}",
-            text_color=self.refresh_status_color,
-            font=ctk.CTkFont(
-                family="맑은 고딕",
-                size=10,
-            ),
-        )
-        self.status_label.pack(side="left")
-
-        self.footer_label = ctk.CTkLabel(
-            footer_frame,
-            text="",
-            text_color=TEXT_SECONDARY,
-            font=ctk.CTkFont(
-                family="맑은 고딕",
-                size=10,
-            ),
-        )
-
-        self.footer_label.pack(side="right")
         self.popup.update_idletasks()
         self._hide_popup_from_taskbar()
         self._apply_windows_rounding()
         self._position_popup()       
 
-    def _get_settings_summary_text(self) -> str:
-        """현재 설정을 팝업용 한 줄 문구로 만든다."""
+    def _update_settings_summary(self) -> None:
+        """설정 변경 내용을 팝업 요약에 반영한다."""
         if self.low_balance_threshold <= 0:
-            alert_text = "알림 꺼짐"
+            alert_text = "꺼짐"
         else:
             alert_text = (
-                f"{self.low_balance_threshold}% 알림"
+                f"{self.low_balance_threshold}% 이하"
             )
 
         startup_text = (
-            "자동 실행 켜짐"
+            "켜짐"
             if self.start_with_windows
-            else "자동 실행 꺼짐"
+            else "꺼짐"
         )
 
-        return (
-            f"{self.icon_display_mode} 기준"
-            f" · {alert_text}"
-            f" · {startup_text}"
-        )
+        if (
+            self.icon_summary_value_label
+            is not None
+        ):
+            self.icon_summary_value_label.configure(
+                text=self.icon_display_mode
+            )
 
-    def _update_settings_summary(self) -> None:
-        """설정 변경 내용을 팝업 요약에 반영한다."""
-        if self.settings_summary_label is None:
-            return
+        if (
+            self.alert_summary_value_label
+            is not None
+        ):
+            self.alert_summary_value_label.configure(
+                text=alert_text
+            )
 
-        self.settings_summary_label.configure(
-            text=self._get_settings_summary_text()
-        )
+        if (
+            self.startup_summary_value_label
+            is not None
+        ):
+            self.startup_summary_value_label.configure(
+                text=startup_text,
+                text_color=(
+                    GREEN
+                    if self.start_with_windows
+                    else TEXT_SECONDARY
+                ),
+            )
 
         if (
             self.popup is not None
@@ -1866,6 +1828,14 @@ class UsageTrayApp:
         if self.content_frame is None:
             return
 
+        self.next_refresh_value_label = None
+        self.last_refresh_value_label = None
+        self.status_label = None
+
+        self.icon_summary_value_label = None
+        self.alert_summary_value_label = None
+        self.startup_summary_value_label = None
+
         for widget in self.content_frame.winfo_children():
             widget.destroy()
 
@@ -1902,11 +1872,6 @@ class UsageTrayApp:
                 loading_label.pack(
                     expand=True,
                     pady=45,
-                )
-
-            if self.footer_label is not None:
-                self.footer_label.configure(
-                    text="최신 정보를 불러오는 중"
                 )
 
         worker = threading.Thread(
@@ -2077,38 +2042,202 @@ class UsageTrayApp:
                 pady=(0, 11),
             )
 
+        self._create_refresh_status_panel()
+
         graph_window = self._select_icon_window(
             snapshot
         )
 
         if graph_window is not None:
-            self._create_history_graph(
+            self._create_bottom_overview(
                 graph_window
             )
 
-        self._update_refresh_footer()
+        self._update_refresh_status_panel()
 
         if self.popup is not None:
             self.popup.after_idle(
                 self._resize_popup_to_content
             )
 
-    def _create_history_graph(
-        self,
-        usage_window: UsageWindow,
-    ) -> None:
-        """최근 잔여 사용량 기록을 선 그래프로 표시한다."""
+    def _create_refresh_status_panel(self) -> None:
+        """갱신 정보와 상태를 3칸 카드로 표시한다."""
         if self.content_frame is None:
             return
 
-        graph_card = ctk.CTkFrame(
+        status_panel = ctk.CTkFrame(
             self.content_frame,
             corner_radius=14,
             fg_color=CARD_BACKGROUND,
         )
-        graph_card.pack(
+        status_panel.pack(
             fill="x",
             pady=(0, 9),
+        )
+
+        for column in (0, 2, 4):
+            status_panel.grid_columnconfigure(
+                column,
+                weight=1,
+                uniform="refresh_status",
+            )
+
+        def create_status_item(
+            column: int,
+            title: str,
+            value: str,
+            value_color: str,
+        ) -> ctk.CTkLabel:
+            item_frame = ctk.CTkFrame(
+                status_panel,
+                fg_color="transparent",
+            )
+            item_frame.grid(
+                row=0,
+                column=column,
+                sticky="nsew",
+                padx=8,
+                pady=10,
+            )
+
+            title_label = ctk.CTkLabel(
+                item_frame,
+                text=title,
+                text_color=TEXT_SECONDARY,
+                font=ctk.CTkFont(
+                    family="맑은 고딕",
+                    size=9,
+                ),
+            )
+            title_label.pack()
+
+            value_label = ctk.CTkLabel(
+                item_frame,
+                text=value,
+                text_color=value_color,
+                font=ctk.CTkFont(
+                    family="맑은 고딕",
+                    size=11,
+                    weight="bold",
+                ),
+            )
+            value_label.pack(
+                pady=(1, 0),
+            )
+
+            return value_label
+
+        first_separator = ctk.CTkFrame(
+            status_panel,
+            width=1,
+            height=38,
+            corner_radius=0,
+            fg_color=BORDER_COLOR,
+        )
+        first_separator.grid(
+            row=0,
+            column=1,
+            pady=10,
+            sticky="ns",
+        )
+
+        second_separator = ctk.CTkFrame(
+            status_panel,
+            width=1,
+            height=38,
+            corner_radius=0,
+            fg_color=BORDER_COLOR,
+        )
+        second_separator.grid(
+            row=0,
+            column=3,
+            pady=10,
+            sticky="ns",
+        )
+
+        self.next_refresh_value_label = (
+            create_status_item(
+                0,
+                "다음 갱신",
+                "--:--",
+                TEXT_PRIMARY,
+            )
+        )
+
+        self.last_refresh_value_label = (
+            create_status_item(
+                2,
+                "마지막 갱신",
+                "--:--:--",
+                TEXT_PRIMARY,
+            )
+        )
+
+        self.status_label = create_status_item(
+            4,
+            "상태",
+            self.refresh_status_text,
+            self.refresh_status_color,
+        )
+
+        self._update_refresh_status_panel()
+
+    def _create_bottom_overview(
+        self,
+        usage_window: UsageWindow,
+    ) -> None:
+        """그래프와 설정 요약을 좌우로 배치한다."""
+        if self.content_frame is None:
+            return
+
+        overview_row = ctk.CTkFrame(
+            self.content_frame,
+            fg_color="transparent",
+        )
+        overview_row.pack(
+            fill="x",
+            pady=(0, 9),
+        )
+
+        overview_row.grid_columnconfigure(
+            0,
+            weight=3,
+        )
+        overview_row.grid_columnconfigure(
+            1,
+            weight=2,
+        )
+        overview_row.grid_rowconfigure(
+            0,
+            weight=1,
+        )
+
+        self._create_history_graph(
+            overview_row,
+            usage_window,
+        )
+
+        self._create_settings_summary_card(
+            overview_row
+        )
+
+    def _create_history_graph(
+        self,
+        parent: ctk.CTkFrame,
+        usage_window: UsageWindow,
+    ) -> None:
+        """최근 잔여 사용량 기록을 선 그래프로 표시한다."""
+
+        graph_card = ctk.CTkFrame(
+            parent,
+            corner_radius=14,
+            fg_color=CARD_BACKGROUND,
+        )
+        graph_card.grid(
+            row=0,
+            column=0,
+            sticky="nsew",
+            padx=(0, 5),
         )
 
         title_row = ctk.CTkFrame(
@@ -2161,17 +2290,142 @@ class UsageTrayApp:
             borderwidth=0,
         )
         graph_canvas.pack(
-            fill="x",
+            fill="both",
+            expand=True,
             padx=10,
             pady=(0, 10),
         )
 
-        graph_canvas.after(
-            20,
-            lambda: self._draw_history_graph(
+        graph_canvas.bind(
+            "<Configure>",
+            lambda event: self._draw_history_graph(
                 graph_canvas,
                 history_points,
             ),
+        )
+
+    def _create_settings_summary_card(
+        self,
+        parent: ctk.CTkFrame,
+    ) -> None:
+        """현재 주요 설정을 요약 카드로 표시한다."""
+        settings_card = ctk.CTkFrame(
+            parent,
+            corner_radius=14,
+            fg_color=CARD_BACKGROUND,
+        )
+        settings_card.grid(
+            row=0,
+            column=1,
+            sticky="nsew",
+            padx=(5, 0),
+        )
+
+        title_label = ctk.CTkLabel(
+            settings_card,
+            text="설정 요약",
+            text_color=TEXT_PRIMARY,
+            anchor="w",
+            font=ctk.CTkFont(
+                family="맑은 고딕",
+                size=12,
+                weight="bold",
+            ),
+        )
+        title_label.pack(
+            fill="x",
+            padx=14,
+            pady=(11, 8),
+        )
+
+        def create_summary_row(
+            title: str,
+            value: str,
+            *,
+            value_color: str = TEXT_SECONDARY,
+        ) -> ctk.CTkLabel:
+            row_frame = ctk.CTkFrame(
+                settings_card,
+                height=31,
+                corner_radius=8,
+                fg_color="#25272B",
+                border_width=1,
+                border_color=BORDER_COLOR,
+            )
+            row_frame.pack(
+                fill="x",
+                padx=10,
+                pady=(0, 6),
+            )
+            row_frame.pack_propagate(False)
+
+            title_label = ctk.CTkLabel(
+                row_frame,
+                text=title,
+                text_color=TEXT_SECONDARY,
+                font=ctk.CTkFont(
+                    family="맑은 고딕",
+                    size=9,
+                ),
+            )
+            title_label.pack(
+                side="left",
+                padx=(10, 4),
+            )
+
+            value_label = ctk.CTkLabel(
+                row_frame,
+                text=value,
+                text_color=value_color,
+                font=ctk.CTkFont(
+                    family="맑은 고딕",
+                    size=9,
+                    weight="bold",
+                ),
+            )
+            value_label.pack(
+                side="right",
+                padx=(4, 10),
+            )
+
+            return value_label
+
+        self.icon_summary_value_label = (
+            create_summary_row(
+                "아이콘 기준",
+                self.icon_display_mode,
+            )
+        )
+
+        alert_text = (
+            "꺼짐"
+            if self.low_balance_threshold <= 0
+            else (
+                f"{self.low_balance_threshold}% 이하"
+            )
+        )
+
+        self.alert_summary_value_label = (
+            create_summary_row(
+                "알림",
+                alert_text,
+            )
+        )
+
+        self.startup_summary_value_label = (
+            create_summary_row(
+                "자동 실행",
+                (
+                    "켜짐"
+                    if self.start_with_windows
+                    else "꺼짐"
+                ),
+                value_color=(
+                    GREEN
+                    if self.start_with_windows
+                    else TEXT_SECONDARY
+                ),
+            )
         )
 
     def _draw_history_graph(
@@ -2189,7 +2443,10 @@ class UsageTrayApp:
             canvas.winfo_width(),
             280,
         )
-        height = HISTORY_GRAPH_HEIGHT
+        height = max(
+            canvas.winfo_height(),
+            HISTORY_GRAPH_HEIGHT,
+        )
 
         left = 34
         right = width - 8
@@ -2414,7 +2671,7 @@ class UsageTrayApp:
             self.content_frame,
             text=message,
             text_color=RED,
-            wraplength=290,
+            wraplength=440,
             font=ctk.CTkFont(
                 family="맑은 고딕",
                 size=12,
@@ -2424,11 +2681,6 @@ class UsageTrayApp:
             expand=True,
             pady=35,
         )
-
-        if self.footer_label is not None:
-            self.footer_label.configure(
-                text="조회 실패"
-            )
 
     def _set_refresh_status(
         self,
@@ -2473,7 +2725,7 @@ class UsageTrayApp:
         self.next_refresh_at = None
 
         self._cancel_refresh_countdown()
-        self._update_refresh_footer()
+        self._update_refresh_status_panel()
         self._refresh_usage(show_loading=False)
 
     def _cancel_auto_refresh(self) -> None:
@@ -2494,7 +2746,7 @@ class UsageTrayApp:
     def _update_refresh_countdown(self) -> None:
         """다음 자동 갱신까지 남은 시간을 1초마다 갱신한다."""
         self.refresh_countdown_job = None
-        self._update_refresh_footer()
+        self._update_refresh_status_panel()
 
         if self.next_refresh_at is None:
             return
@@ -2517,11 +2769,8 @@ class UsageTrayApp:
         )
         self.refresh_countdown_job = None
 
-    def _update_refresh_footer(self) -> None:
-        """다음 갱신 시간과 마지막 갱신 시각을 표시한다."""
-        if self.footer_label is None:
-            return
-
+    def _update_refresh_status_panel(self) -> None:
+        """다음 갱신, 마지막 갱신, 상태를 갱신한다."""
         if self.next_refresh_at is None:
             countdown_text = "--:--"
         else:
@@ -2533,10 +2782,12 @@ class UsageTrayApp:
                     + 0.999
                 ),
             )
+
             minutes, seconds = divmod(
                 remaining_seconds,
                 60,
             )
+
             countdown_text = (
                 f"{minutes:02d}:{seconds:02d}"
             )
@@ -2550,12 +2801,27 @@ class UsageTrayApp:
                 )
             )
 
-        self.footer_label.configure(
-            text=(
-                f"다음 갱신 {countdown_text}"
-                f"  ·  마지막 갱신 {fetched_text}"
+        if (
+            self.next_refresh_value_label
+            is not None
+        ):
+            self.next_refresh_value_label.configure(
+                text=countdown_text
             )
-        )
+
+        if (
+            self.last_refresh_value_label
+            is not None
+        ):
+            self.last_refresh_value_label.configure(
+                text=fetched_text
+            )
+
+        if self.status_label is not None:
+            self.status_label.configure(
+                text=self.refresh_status_text,
+                text_color=self.refresh_status_color,
+            )
 
     @staticmethod
     def _get_usage_color(
