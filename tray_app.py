@@ -226,6 +226,7 @@ class UsageTrayApp:
         self.content_frame: ctk.CTkFrame | None = None
         self.footer_label: ctk.CTkLabel | None = None
         self.auto_refresh_label: ctk.CTkLabel | None = None
+        self.settings_summary_label: ctk.CTkLabel | None = None
 
         self.status_label: ctk.CTkLabel | None = None
         self.refresh_status_text = "대기"
@@ -920,6 +921,60 @@ class UsageTrayApp:
             pady=(0, 4),
         )
 
+        settings_summary_frame = ctk.CTkFrame(
+            outer_frame,
+            corner_radius=12,
+            fg_color=CARD_BACKGROUND,
+        )
+        settings_summary_frame.pack(
+            fill="x",
+            padx=16,
+            pady=(0, 9),
+        )
+
+        settings_summary_frame.grid_columnconfigure(
+            1,
+            weight=1,
+        )
+
+        settings_title_label = ctk.CTkLabel(
+            settings_summary_frame,
+            text="설정",
+            text_color=TEXT_PRIMARY,
+            font=ctk.CTkFont(
+                family="맑은 고딕",
+                size=11,
+                weight="bold",
+            ),
+        )
+        settings_title_label.grid(
+            row=0,
+            column=0,
+            padx=(14, 8),
+            pady=11,
+            sticky="w",
+        )
+
+        self.settings_summary_label = ctk.CTkLabel(
+            settings_summary_frame,
+            text=self._get_settings_summary_text(),
+            text_color=TEXT_SECONDARY,
+            anchor="e",
+            justify="right",
+            wraplength=220,
+            font=ctk.CTkFont(
+                family="맑은 고딕",
+                size=10,
+            ),
+        )
+        self.settings_summary_label.grid(
+            row=0,
+            column=1,
+            padx=(0, 14),
+            pady=11,
+            sticky="e",
+        )
+
         footer_frame = ctk.CTkFrame(
             outer_frame,
             fg_color="transparent",
@@ -956,6 +1011,44 @@ class UsageTrayApp:
         self._hide_popup_from_taskbar()
         self._apply_windows_rounding()
         self._position_popup()       
+
+    def _get_settings_summary_text(self) -> str:
+        """현재 설정을 팝업용 한 줄 문구로 만든다."""
+        if self.low_balance_threshold <= 0:
+            alert_text = "알림 꺼짐"
+        else:
+            alert_text = (
+                f"{self.low_balance_threshold}% 알림"
+            )
+
+        startup_text = (
+            "자동 실행 켜짐"
+            if self.start_with_windows
+            else "자동 실행 꺼짐"
+        )
+
+        return (
+            f"{self.icon_display_mode} 기준"
+            f" · {alert_text}"
+            f" · {startup_text}"
+        )
+
+    def _update_settings_summary(self) -> None:
+        """설정 변경 내용을 팝업 요약에 반영한다."""
+        if self.settings_summary_label is None:
+            return
+
+        self.settings_summary_label.configure(
+            text=self._get_settings_summary_text()
+        )
+
+        if (
+            self.popup is not None
+            and self.popup.winfo_exists()
+        ):
+            self.popup.after_idle(
+                self._resize_popup_to_content
+            )
 
     def _open_settings(self) -> None:
         """설정 창을 열거나 기존 설정 창을 앞으로 가져온다."""
@@ -1249,6 +1342,7 @@ class UsageTrayApp:
 
         self.icon_display_mode = mode
         self._save_settings()
+        self._update_settings_summary()
 
         if self.latest_snapshot is not None:
             self._update_tray_status(
@@ -1278,6 +1372,7 @@ class UsageTrayApp:
 
         self.low_balance_threshold = threshold
         self._save_settings()
+        self._update_settings_summary()
 
         if threshold == 0:
             self.low_balance_notified_keys.clear()
@@ -1345,6 +1440,7 @@ class UsageTrayApp:
 
         self.start_with_windows = requested_enabled
         self._save_settings()
+        self._update_settings_summary()
 
     def _close_settings(self) -> None:
         """설정 창을 닫는다."""
