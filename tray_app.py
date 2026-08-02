@@ -85,7 +85,7 @@ RED = "#E25555"
 
 HISTORY_GRAPH_DAYS = 7
 HISTORY_GRAPH_MAX_POINTS = 48
-HISTORY_GRAPH_HEIGHT = 130
+HISTORY_GRAPH_HEIGHT = 118
 
 
 # Tk 좌표와 Win32 트레이 좌표가 다른 DPI 환경에서도
@@ -2135,7 +2135,10 @@ class UsageTrayApp:
 
         period_label = ctk.CTkLabel(
             title_row,
-            text=usage_window.label,
+            text=(
+                f"최근 {HISTORY_GRAPH_DAYS}일"
+                f" · {usage_window.label}"
+            ),
             text_color=TEXT_SECONDARY,
             font=ctk.CTkFont(
                 family="맑은 고딕",
@@ -2229,6 +2232,10 @@ class UsageTrayApp:
             )
             return
 
+        line_color = self._get_usage_color(
+            points[-1].remaining_percent
+        )
+
         start_time = points[0].recorded_at
         end_time = points[-1].recorded_at
 
@@ -2268,36 +2275,44 @@ class UsageTrayApp:
                 y - 3,
                 x + 3,
                 y + 3,
-                fill=GREEN,
+                fill=line_color,
                 outline="",
             )
 
         else:
             canvas.create_line(
                 *coordinates,
-                fill=GREEN,
+                fill=line_color,
                 width=2,
             )
 
-            marker_step = max(
-                1,
-                len(points) // 10,
-            )
-
-            for index in range(
+            # 중간 기록에는 점을 표시하지 않고,
+            # 시작점과 최신 값만 강조한다.
+            marker_indexes = {
                 0,
-                len(points),
-                marker_step,
+                len(points) - 1,
+            }
+
+            for index in sorted(
+                marker_indexes
             ):
                 x = coordinates[index * 2]
-                y = coordinates[index * 2 + 1]
+                y = coordinates[
+                    index * 2 + 1
+                ]
+
+                radius = (
+                    3
+                    if index == len(points) - 1
+                    else 2
+                )
 
                 canvas.create_oval(
-                    x - 2,
-                    y - 2,
-                    x + 2,
-                    y + 2,
-                    fill=GREEN,
+                    x - radius,
+                    y - radius,
+                    x + radius,
+                    y + radius,
+                    fill=line_color,
                     outline="",
                 )
 
