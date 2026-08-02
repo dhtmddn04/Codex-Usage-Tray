@@ -246,6 +246,10 @@ class UsageTrayApp:
             ctk.CTkLabel | None
         ) = None
 
+        self.alert_notice_label: (
+            ctk.CTkLabel | None
+        ) = None
+
         self.status_label: ctk.CTkLabel | None = None
         self.refresh_status_text = "대기"
         self.refresh_status_color = TEXT_SECONDARY
@@ -1003,6 +1007,8 @@ class UsageTrayApp:
                     else TEXT_SECONDARY
                 ),
             )
+
+        self._update_alert_notice()
 
         if (
             self.popup is not None
@@ -1835,6 +1841,7 @@ class UsageTrayApp:
         self.icon_summary_value_label = None
         self.alert_summary_value_label = None
         self.startup_summary_value_label = None
+        self.alert_notice_label = None
 
         for widget in self.content_frame.winfo_children():
             widget.destroy()
@@ -2053,12 +2060,56 @@ class UsageTrayApp:
                 graph_window
             )
 
+        self._create_alert_notice_bar()
         self._update_refresh_status_panel()
 
         if self.popup is not None:
             self.popup.after_idle(
                 self._resize_popup_to_content
             )
+
+    def _get_alert_notice_text(self) -> str:
+        """현재 알림 설정에 맞는 안내 문구를 만든다."""
+        if self.low_balance_threshold <= 0:
+            return (
+                "ⓘ  잔량 부족 알림이 꺼져 있습니다."
+            )
+
+        return (
+            "ⓘ  알림: 한도가 "
+            f"{self.low_balance_threshold}% 이하로 "
+            "내려가면 알림이 표시됩니다."
+        )
+
+    def _create_alert_notice_bar(self) -> None:
+        """팝업 아래쪽에 잔량 알림 안내를 표시한다."""
+        if self.content_frame is None:
+            return
+
+        self.alert_notice_label = ctk.CTkLabel(
+            self.content_frame,
+            text=self._get_alert_notice_text(),
+            text_color=TEXT_SECONDARY,
+            anchor="w",
+            font=ctk.CTkFont(
+                family="맑은 고딕",
+                size=9,
+            ),
+        )
+        self.alert_notice_label.pack(
+            fill="x",
+            padx=10,
+            pady=(0, 7),
+        )
+
+    def _update_alert_notice(self) -> None:
+        """알림 설정 변경 내용을 안내 문구에 반영한다."""
+        if self.alert_notice_label is None:
+            return
+
+        self.alert_notice_label.configure(
+            text=self._get_alert_notice_text()
+        )
 
     def _create_refresh_status_panel(self) -> None:
         """갱신 정보와 상태를 3칸 카드로 표시한다."""
