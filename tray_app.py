@@ -16,7 +16,12 @@ import customtkinter as ctk
 from PIL import Image, ImageDraw, ImageFont
 
 from native_tray import NativeTrayIcon
-from usage_history import (UsageHistoryPoint, load_usage_history, save_usage_snapshot,)
+from i18n import detect_language, translate
+from usage_history import (
+    UsageHistoryPoint,
+    load_usage_history,
+    save_usage_snapshot,
+)
 
 from codex_client import (
     CodexClientError,
@@ -46,6 +51,13 @@ LOW_BALANCE_THRESHOLD_OPTIONS = (
     30,
 )
 DEFAULT_LOW_BALANCE_THRESHOLD = 20
+
+LANGUAGE_MODE_OPTIONS = (
+    "auto",
+    "ko",
+    "en",
+)
+DEFAULT_LANGUAGE_MODE = "auto"
 
 SETTINGS_DIRECTORY = Path(
     os.getenv("APPDATA", str(Path.home()))
@@ -186,11 +198,27 @@ class UsageTrayApp:
     def __init__(self) -> None:
         ctk.set_appearance_mode("dark")
 
+        self.settings = self._load_settings()
+        self.language_mode = (
+            self._normalize_language_mode(
+                self.settings.get(
+                    "language_mode"
+                )
+            )
+        )
+        self.language = self._resolve_language(
+            self.language_mode
+        )
+        self.ui_font_family = (
+            "맑은 고딕"
+            if self.language == "ko"
+            else "Segoe UI"
+        )
+
         # CustomTkinter 이벤트 루프를 실행하기 위한 숨겨진 창
         self.root = ctk.CTk()
         self.root.withdraw()
 
-        self.settings = self._load_settings()
         self.auto_refresh_minutes = (
             self._normalize_refresh_minutes(
                 self.settings.get(
@@ -251,7 +279,10 @@ class UsageTrayApp:
         ) = None
 
         self.status_label: ctk.CTkLabel | None = None
-        self.refresh_status_text = "대기"
+        self.refresh_status_key = "status_waiting"
+        self.refresh_status_text = self._t(
+            self.refresh_status_key
+        )
         self.refresh_status_color = TEXT_SECONDARY
 
         self.popup_height = INITIAL_POPUP_HEIGHT
@@ -276,6 +307,147 @@ class UsageTrayApp:
         ] = queue.Queue()
 
         self.tray_icon = self._create_tray_icon()
+        self.tray_icon.set_language(
+            self.language
+        )
+
+    def _t(
+        self,
+        key: str,
+        **values: Any,
+    ) -> str:
+        """현재 표시 언어의 문구를 반환한다."""
+        return translate(
+            self.language,
+            key,
+            **values,
+        )
+
+    @staticmethod
+    def _normalize_language_mode(
+        value: Any,
+    ) -> str:
+        """저장된 언어 설정을 올바른 값으로 정리한다."""
+        if value in LANGUAGE_MODE_OPTIONS:
+            return str(value)
+
+        return DEFAULT_LANGUAGE_MODE
+
+    @staticmethod
+    def _resolve_language(
+        language_mode: str,
+    ) -> str:
+        """언어 설정으로 실제 표시 언어를 결정한다."""
+        if language_mode in {"ko", "en"}:
+            return language_mode
+
+        return detect_language()
+
+    def _get_language_mode_text(
+        self,
+        language_mode: str,
+    ) -> str:
+        """언어 설정값을 현재 언어의 문구로 표시한다."""
+        key_by_mode = {
+            "auto": "language_auto",
+            "ko": "language_korean",
+            "en": "language_english",
+        }
+
+        return self._t(
+            key_by_mode.get(
+                language_mode,
+                "language_auto",
+            )
+        )
+
+    def _parse_language_mode_text(
+        self,
+        selected_value: str,
+    ) -> str:
+        """번역된 언어 문구를 내부 설정값으로 바꾼다."""
+        for language_mode in LANGUAGE_MODE_OPTIONS:
+            if selected_value == (
+                self._get_language_mode_text(
+                    language_mode
+                )
+            ):
+                return language_mode
+
+        return DEFAULT_LANGUAGE_MODE
+
+    def _rebuild_language_dependent_windows(
+        self,
+    ) -> None:
+        """언어 변경 후 팝업과 설정 창을 새 문구로 다시 만든다."""
+        if (
+            self.popup is not None
+            and self.popup.winfo_exists()
+        ):
+            self.popup.destroy()
+
+        self.popup = None
+        self.outer_frame = None
+        self.content_frame = None
+        self.auto_refresh_label = None
+        self.next_refresh_value_label = None
+        self.last_refresh_value_label = None
+        self.status_label = None
+        self.icon_summary_value_label = None
+        self.alert_summary_value_label = None
+        self.startup_summary_value_label = None
+        self.alert_notice_label = None
+        self.popup_height = INITIAL_POPUP_HEIGHT
+
+        self._close_settings()
+        self.root.after(
+            20,
+            self._open_settings,
+        )
+
+    def _get_window_label(
+        self,
+        usage_window: UsageWindow,
+    ) -> str:
+        """사용량 한도 이름을 현재 언어로 반환한다."""
+        if usage_window.duration_mins == 300:
+            return self._t(
+                "window_five_hour"
+            )
+
+        if usage_window.duration_mins == 10_080:
+            return self._t(
+                "window_week"
+            )
+
+        return usage_window.label
+
+    def _get_icon_mode_text(
+        self,
+        mode: str,
+    ) -> str:
+        """아이콘 기준 설정을 현재 언어로 표시한다."""
+        if mode == "5시간":
+            return self._t(
+                "icon_five_hour"
+            )
+
+        return self._t(
+            "icon_week"
+        )
+
+    def _parse_icon_mode_text(
+        self,
+        selected_value: str,
+    ) -> str:
+        """번역된 아이콘 기준 문구를 내부 값으로 바꾼다."""
+        if selected_value in {
+            "5시간",
+            "5 hours",
+        }:
+            return "5시간"
+
+        return "주간"
 
     @staticmethod
     def _normalize_refresh_minutes(
@@ -416,6 +588,10 @@ class UsageTrayApp:
 
     def _save_settings(self) -> None:
         """현재 앱 설정을 파일에 저장한다."""
+        self.settings[
+            "language_mode"
+        ] = self.language_mode
+
         self.settings[
             "auto_refresh_minutes"
         ] = self.auto_refresh_minutes
@@ -655,8 +831,13 @@ class UsageTrayApp:
                 continue
 
             message = (
-                f"{usage_window.label}: "
-                f"{usage_window.remaining_percent:g}% 남음"
+                f"{self._get_window_label(usage_window)}: "
+                + self._t(
+                    "remaining",
+                    remaining=(
+                        usage_window.remaining_percent
+                    ),
+                )
             )
 
             pending_items.append(
@@ -672,7 +853,7 @@ class UsageTrayApp:
 
         notification_sent = (
             self.tray_icon.show_notification(
-                "Codex 사용량 알림",
+                self._t("notification_title"),
                 "\n".join(
                     message
                     for _, message in pending_items
@@ -905,10 +1086,10 @@ class UsageTrayApp:
 
         title_label = ctk.CTkLabel(
             header,
-            text="Codex 사용량",
+            text=self._t("app_title"),
             text_color=TEXT_PRIMARY,
             font=ctk.CTkFont(
-                family="맑은 고딕",
+                family=self.ui_font_family,
                 size=18,
                 weight="bold",
             ),
@@ -934,13 +1115,13 @@ class UsageTrayApp:
 
         self.auto_refresh_label = ctk.CTkLabel(
             header,
-            text=(
-                f"●  {self.auto_refresh_minutes}분 "
-                "자동 갱신"
+            text=self._t(
+                "auto_refresh",
+                minutes=self.auto_refresh_minutes,
             ),
             text_color=GREEN,
             font=ctk.CTkFont(
-                family="맑은 고딕",
+                family=self.ui_font_family,
                 size=11,
             ),
         )
@@ -967,16 +1148,19 @@ class UsageTrayApp:
     def _update_settings_summary(self) -> None:
         """설정 변경 내용을 팝업 요약에 반영한다."""
         if self.low_balance_threshold <= 0:
-            alert_text = "꺼짐"
+            alert_text = self._t("off")
         else:
             alert_text = (
-                f"{self.low_balance_threshold}% 이하"
+                self._t(
+                    "threshold_option",
+                    threshold=self.low_balance_threshold,
+                )
             )
 
         startup_text = (
-            "켜짐"
+           self._t("on")
             if self.start_with_windows
-            else "꺼짐"
+            else self._t("off")
         )
 
         if (
@@ -984,7 +1168,9 @@ class UsageTrayApp:
             is not None
         ):
             self.icon_summary_value_label.configure(
-                text=self.icon_display_mode
+                text=self._get_icon_mode_text(
+                    self.icon_display_mode
+                )
             )
 
         if (
@@ -1032,7 +1218,9 @@ class UsageTrayApp:
         self.settings_window = ctk.CTkToplevel(
             self.root
         )
-        self.settings_window.title("Codex Usage 설정")
+        self.settings_window.title(
+            self._t("settings_window_title")
+        )
         self.settings_window.resizable(False, False)
         self.settings_window.configure(
             fg_color=BACKGROUND
@@ -1046,8 +1234,18 @@ class UsageTrayApp:
             self._close_settings,
         )
 
-        width = 360
-        height = 330
+        width = (
+            430
+            if self.language == "en"
+            else 360
+        )
+        height = 388
+
+        option_menu_width = (
+            112
+            if self.language == "en"
+            else 92
+        )
         screen_width = (
             self.settings_window.winfo_screenwidth()
         )
@@ -1064,10 +1262,10 @@ class UsageTrayApp:
 
         title_label = ctk.CTkLabel(
             self.settings_window,
-            text="설정",
+            text=self._t("settings_title"),
             text_color=TEXT_PRIMARY,
             font=ctk.CTkFont(
-                family="맑은 고딕",
+                family=self.ui_font_family,
                 size=20,
                 weight="bold",
             ),
@@ -1076,6 +1274,67 @@ class UsageTrayApp:
             anchor="w",
             padx=22,
             pady=(20, 14),
+        )
+
+        language_row = ctk.CTkFrame(
+            self.settings_window,
+            height=48,
+            corner_radius=10,
+            fg_color=CARD_BACKGROUND,
+        )
+        language_row.pack(
+            fill="x",
+            padx=20,
+            pady=5,
+        )
+        language_row.pack_propagate(False)
+
+        language_label = ctk.CTkLabel(
+            language_row,
+            text=self._t("language"),
+            text_color=TEXT_PRIMARY,
+            font=ctk.CTkFont(
+                family=self.ui_font_family,
+                size=12,
+            ),
+        )
+        language_label.pack(
+            side="left",
+            padx=14,
+        )
+
+        language_menu = ctk.CTkOptionMenu(
+            language_row,
+            values=[
+                self._get_language_mode_text(
+                    language_mode
+                )
+                for language_mode
+                in LANGUAGE_MODE_OPTIONS
+            ],
+            command=self._on_language_mode_changed,
+            width=option_menu_width,
+            height=30,
+            corner_radius=8,
+            fg_color="#3A3C40",
+            button_color="#44464A",
+            button_hover_color="#50535A",
+            dropdown_fg_color=CARD_BACKGROUND,
+            dropdown_hover_color="#3A3C40",
+            text_color=TEXT_PRIMARY,
+            font=ctk.CTkFont(
+                family=self.ui_font_family,
+                size=11,
+            ),
+        )
+        language_menu.set(
+            self._get_language_mode_text(
+                self.language_mode
+            )
+        )
+        language_menu.pack(
+            side="right",
+            padx=12,
         )
 
         refresh_row = ctk.CTkFrame(
@@ -1093,10 +1352,10 @@ class UsageTrayApp:
 
         refresh_label = ctk.CTkLabel(
             refresh_row,
-            text="자동 갱신 주기",
+            text=self._t("refresh_interval"),
             text_color=TEXT_PRIMARY,
             font=ctk.CTkFont(
-                family="맑은 고딕",
+                family=self.ui_font_family,
                 size=12,
             ),
         )
@@ -1108,11 +1367,14 @@ class UsageTrayApp:
         refresh_menu = ctk.CTkOptionMenu(
             refresh_row,
             values=[
-                f"{minutes}분"
+                self._t(
+                    "minutes_option",
+                    minutes=minutes,
+                )
                 for minutes in REFRESH_INTERVAL_OPTIONS
             ],
             command=self._on_refresh_interval_changed,
-            width=92,
+            width=option_menu_width,
             height=30,
             corner_radius=8,
             fg_color="#3A3C40",
@@ -1122,12 +1384,15 @@ class UsageTrayApp:
             dropdown_hover_color="#3A3C40",
             text_color=TEXT_PRIMARY,
             font=ctk.CTkFont(
-                family="맑은 고딕",
+                family=self.ui_font_family,
                 size=11,
             ),
         )
         refresh_menu.set(
-            f"{self.auto_refresh_minutes}분"
+            self._t(
+                "minutes_option",
+                minutes=self.auto_refresh_minutes,
+            )
         )
         refresh_menu.pack(
             side="right",
@@ -1149,10 +1414,10 @@ class UsageTrayApp:
 
         icon_label = ctk.CTkLabel(
             icon_row,
-            text="트레이 아이콘 표시 기준",
+            text=self._t("tray_icon_basis"),
             text_color=TEXT_PRIMARY,
             font=ctk.CTkFont(
-                family="맑은 고딕",
+                family=self.ui_font_family,
                 size=12,
             ),
         )
@@ -1163,9 +1428,12 @@ class UsageTrayApp:
 
         icon_menu = ctk.CTkOptionMenu(
             icon_row,
-            values=list(ICON_DISPLAY_OPTIONS),
+            values=[
+                self._t("icon_week"),
+                self._t("icon_five_hour"),
+            ],
             command=self._on_icon_display_mode_changed,
-            width=92,
+            width=option_menu_width,
             height=30,
             corner_radius=8,
             fg_color="#3A3C40",
@@ -1175,11 +1443,15 @@ class UsageTrayApp:
             dropdown_hover_color="#3A3C40",
             text_color=TEXT_PRIMARY,
             font=ctk.CTkFont(
-                family="맑은 고딕",
+                family=self.ui_font_family,
                 size=11,
             ),
         )
-        icon_menu.set(self.icon_display_mode)
+        icon_menu.set(
+            self._get_icon_mode_text(
+                self.icon_display_mode
+            )
+        )
         icon_menu.pack(
             side="right",
             padx=12,
@@ -1200,10 +1472,10 @@ class UsageTrayApp:
 
         alert_label = ctk.CTkLabel(
             alert_row,
-            text="잔량 부족 알림",
+            text=self._t("low_balance_alert"),
             text_color=TEXT_PRIMARY,
             font=ctk.CTkFont(
-                family="맑은 고딕",
+                family=self.ui_font_family,
                 size=12,
             ),
         )
@@ -1215,15 +1487,19 @@ class UsageTrayApp:
         alert_menu = ctk.CTkOptionMenu(
             alert_row,
             values=[
-                "꺼짐",
-                "10% 이하",
-                "20% 이하",
-                "30% 이하",
+                self._t("off"),
+                *[
+                    self._t(
+                        "threshold_option",
+                        threshold=threshold,
+                    )
+                    for threshold in (10, 20, 30)
+                ],
             ],
             command=(
                 self._on_low_balance_threshold_changed
             ),
-            width=92,
+            width=option_menu_width,
             height=30,
             corner_radius=8,
             fg_color="#3A3C40",
@@ -1233,16 +1509,23 @@ class UsageTrayApp:
             dropdown_hover_color="#3A3C40",
             text_color=TEXT_PRIMARY,
             font=ctk.CTkFont(
-                family="맑은 고딕",
+                family=self.ui_font_family,
                 size=11,
             ),
         )
 
         if self.low_balance_threshold == 0:
-            alert_menu.set("꺼짐")
+            alert_menu.set(
+                self._t("off")
+            )
         else:
             alert_menu.set(
-                f"{self.low_balance_threshold}% 이하"
+                self._t(
+                    "threshold_option",
+                    threshold=(
+                        self.low_balance_threshold
+                    ),
+                )
             )
 
         alert_menu.pack(
@@ -1265,10 +1548,10 @@ class UsageTrayApp:
 
         startup_label = ctk.CTkLabel(
             startup_row,
-            text="Windows 시작 시 자동 실행",
+            text=self._t("startup"),
             text_color=TEXT_PRIMARY,
             font=ctk.CTkFont(
-                family="맑은 고딕",
+                family=self.ui_font_family,
                 size=12,
             ),
         )
@@ -1296,12 +1579,52 @@ class UsageTrayApp:
         else:
             self.startup_switch.deselect()
 
+    def _on_language_mode_changed(
+        self,
+        selected_value: str,
+    ) -> None:
+        """표시 언어 설정을 저장하고 즉시 적용한다."""
+        language_mode = (
+            self._parse_language_mode_text(
+                selected_value
+            )
+        )
+
+        if language_mode == self.language_mode:
+            return
+
+        self.language_mode = language_mode
+        new_language = self._resolve_language(
+            language_mode
+        )
+        self._save_settings()
+
+        if new_language == self.language:
+            return
+
+        self.language = new_language
+        self.ui_font_family = (
+            "맑은 고딕"
+            if self.language == "ko"
+            else "Segoe UI"
+        )
+        self.refresh_status_text = self._t(
+            self.refresh_status_key
+        )
+        self.tray_icon.set_language(
+            self.language
+        )
+
+        self.root.after_idle(
+            self._rebuild_language_dependent_windows
+        )
+
     def _on_icon_display_mode_changed(
         self,
         selected_value: str,
     ) -> None:
         """트레이 아이콘에 표시할 한도를 변경한다."""
-        mode = self._normalize_icon_display_mode(
+        mode = self._parse_icon_mode_text(
             selected_value
         )
 
@@ -1322,12 +1645,18 @@ class UsageTrayApp:
         selected_value: str,
     ) -> None:
         """잔량 부족 알림 기준을 변경한다."""
-        if selected_value == "꺼짐":
+        if selected_value in {
+            "꺼짐",
+            "Off",
+        }:
             threshold = 0
         else:
-            threshold = int(
-                selected_value.split("%", 1)[0]
+            number_text = "".join(
+                character
+                for character in selected_value
+                if character.isdigit()
             )
+            threshold = int(number_text)
 
         threshold = (
             self._normalize_low_balance_threshold(
@@ -1356,8 +1685,14 @@ class UsageTrayApp:
         selected_value: str,
     ) -> None:
         """선택한 자동 갱신 주기를 즉시 적용한다."""
+        number_text = "".join(
+            character
+            for character in selected_value
+            if character.isdigit()
+        )
+
         minutes = self._normalize_refresh_minutes(
-            selected_value.removesuffix("분")
+            number_text
         )
 
         if minutes == self.auto_refresh_minutes:
@@ -1381,9 +1716,9 @@ class UsageTrayApp:
             return
 
         self.auto_refresh_label.configure(
-            text=(
-                f"●  {self.auto_refresh_minutes}분 "
-                "자동 갱신"
+            text=self._t(
+                "auto_refresh",
+                minutes=self.auto_refresh_minutes,
             )
         )
 
@@ -1859,7 +2194,7 @@ class UsageTrayApp:
         self._cancel_auto_refresh()
 
         self._set_refresh_status(
-            "갱신 중",
+            "status_refreshing",
             ORANGE,
         )
 
@@ -1869,10 +2204,10 @@ class UsageTrayApp:
             if self.content_frame is not None:
                 loading_label = ctk.CTkLabel(
                     self.content_frame,
-                    text="사용량을 조회하는 중...",
+                    text=self._t("loading"),
                     text_color=TEXT_SECONDARY,
                     font=ctk.CTkFont(
-                        family="맑은 고딕",
+                        family=self.ui_font_family,
                         size=13,
                     ),
                 )
@@ -1905,7 +2240,10 @@ class UsageTrayApp:
             self.command_queue.put(
                 (
                     "usage_error",
-                    f"예상하지 못한 오류: {error}",
+                    self._t(
+                        "unexpected_error",
+                        error=error,
+                    ),
                 )
             )
 
@@ -1924,12 +2262,12 @@ class UsageTrayApp:
 
         if not windows:
             self._display_error(
-                "사용량 한도 정보가 없습니다."
+                self._t("no_limits")
             )
             return
 
         self._set_refresh_status(
-            "정상",
+            "status_normal",
             GREEN,
         )
 
@@ -1949,7 +2287,7 @@ class UsageTrayApp:
         plan_name = (
             f"ChatGPT {snapshot.plan_type.capitalize()}"
             if snapshot.plan_type
-            else "요금제 정보 없음"
+            else self._t("plan_unknown")
         )
 
         plan_label = ctk.CTkLabel(
@@ -1958,7 +2296,7 @@ class UsageTrayApp:
             text_color=TEXT_SECONDARY,
             anchor="w",
             font=ctk.CTkFont(
-                family="맑은 고딕",
+                family=self.ui_font_family,
                 size=11,
             ),
         )
@@ -1995,10 +2333,12 @@ class UsageTrayApp:
 
             name_label = ctk.CTkLabel(
                 top_row,
-                text=usage_window.label,
+                text=self._get_window_label(
+                    usage_window
+                ),
                 text_color=TEXT_PRIMARY,
                 font=ctk.CTkFont(
-                    family="맑은 고딕",
+                    family=self.ui_font_family,
                     size=14,
                     weight="bold",
                 ),
@@ -2007,10 +2347,13 @@ class UsageTrayApp:
 
             percent_label = ctk.CTkLabel(
                 top_row,
-                text=f"{remaining:g}% 남음",
+                text=self._t(
+                    "remaining",
+                    remaining=remaining,
+                ),
                 text_color=usage_color,
                 font=ctk.CTkFont(
-                    family="맑은 고딕",
+                    family=self.ui_font_family,
                     size=14,
                     weight="bold",
                 ),
@@ -2039,7 +2382,7 @@ class UsageTrayApp:
                 text_color=TEXT_SECONDARY,
                 anchor="w",
                 font=ctk.CTkFont(
-                    family="맑은 고딕",
+                    family=self.ui_font_family,
                     size=10,
                 ),
             )
@@ -2071,14 +2414,13 @@ class UsageTrayApp:
     def _get_alert_notice_text(self) -> str:
         """현재 알림 설정에 맞는 안내 문구를 만든다."""
         if self.low_balance_threshold <= 0:
-            return (
-                "ⓘ  잔량 부족 알림이 꺼져 있습니다."
+            return self._t(
+                "alert_notice_off"
             )
 
-        return (
-            "ⓘ  알림: 한도가 "
-            f"{self.low_balance_threshold}% 이하로 "
-            "내려가면 알림이 표시됩니다."
+        return self._t(
+            "alert_notice_on",
+            threshold=self.low_balance_threshold,
         )
 
     def _create_alert_notice_bar(self) -> None:
@@ -2091,8 +2433,10 @@ class UsageTrayApp:
             text=self._get_alert_notice_text(),
             text_color=TEXT_SECONDARY,
             anchor="w",
+            justify="left",
+            wraplength=440,
             font=ctk.CTkFont(
-                family="맑은 고딕",
+                family=self.ui_font_family,
                 size=9,
             ),
         )
@@ -2156,7 +2500,7 @@ class UsageTrayApp:
                 text=title,
                 text_color=TEXT_SECONDARY,
                 font=ctk.CTkFont(
-                    family="맑은 고딕",
+                    family=self.ui_font_family,
                     size=9,
                 ),
             )
@@ -2167,7 +2511,7 @@ class UsageTrayApp:
                 text=value,
                 text_color=value_color,
                 font=ctk.CTkFont(
-                    family="맑은 고딕",
+                    family=self.ui_font_family,
                     size=11,
                     weight="bold",
                 ),
@@ -2209,7 +2553,7 @@ class UsageTrayApp:
         self.next_refresh_value_label = (
             create_status_item(
                 0,
-                "다음 갱신",
+                self._t("next_refresh"),
                 "--:--",
                 TEXT_PRIMARY,
             )
@@ -2218,7 +2562,7 @@ class UsageTrayApp:
         self.last_refresh_value_label = (
             create_status_item(
                 2,
-                "마지막 갱신",
+                self._t("last_refresh"),
                 "--:--:--",
                 TEXT_PRIMARY,
             )
@@ -2226,7 +2570,7 @@ class UsageTrayApp:
 
         self.status_label = create_status_item(
             4,
-            "상태",
+            self._t("status"),
             self.refresh_status_text,
             self.refresh_status_color,
         )
@@ -2303,10 +2647,10 @@ class UsageTrayApp:
 
         title_label = ctk.CTkLabel(
             title_row,
-            text="최근 사용 추이",
+            text=self._t("graph_title"),
             text_color=TEXT_PRIMARY,
             font=ctk.CTkFont(
-                family="맑은 고딕",
+                family=self.ui_font_family,
                 size=12,
                 weight="bold",
             ),
@@ -2315,13 +2659,16 @@ class UsageTrayApp:
 
         period_label = ctk.CTkLabel(
             title_row,
-            text=(
-                f"최근 {HISTORY_GRAPH_DAYS}일"
-                f" · {usage_window.label}"
+            text=self._t(
+                "graph_period",
+                days=HISTORY_GRAPH_DAYS,
+                label=self._get_window_label(
+                    usage_window
+                ),
             ),
             text_color=TEXT_SECONDARY,
             font=ctk.CTkFont(
-                family="맑은 고딕",
+                family=self.ui_font_family,
                 size=9,
             ),
         )
@@ -2374,11 +2721,11 @@ class UsageTrayApp:
 
         title_label = ctk.CTkLabel(
             settings_card,
-            text="설정 요약",
+            text=self._t("settings_summary"),
             text_color=TEXT_PRIMARY,
             anchor="w",
             font=ctk.CTkFont(
-                family="맑은 고딕",
+                family=self.ui_font_family,
                 size=12,
                 weight="bold",
             ),
@@ -2415,7 +2762,7 @@ class UsageTrayApp:
                 text=title,
                 text_color=TEXT_SECONDARY,
                 font=ctk.CTkFont(
-                    family="맑은 고딕",
+                    family=self.ui_font_family,
                     size=9,
                 ),
             )
@@ -2429,7 +2776,7 @@ class UsageTrayApp:
                 text=value,
                 text_color=value_color,
                 font=ctk.CTkFont(
-                    family="맑은 고딕",
+                    family=self.ui_font_family,
                     size=9,
                     weight="bold",
                 ),
@@ -2443,33 +2790,36 @@ class UsageTrayApp:
 
         self.icon_summary_value_label = (
             create_summary_row(
-                "아이콘 기준",
-                self.icon_display_mode,
+                self._t("icon_basis_short"),
+                self._get_icon_mode_text(
+                    self.icon_display_mode
+                ),
             )
         )
 
         alert_text = (
-            "꺼짐"
+            self._t("off")
             if self.low_balance_threshold <= 0
-            else (
-                f"{self.low_balance_threshold}% 이하"
+            else self._t(
+                "threshold_option",
+                threshold=self.low_balance_threshold,
             )
         )
 
         self.alert_summary_value_label = (
             create_summary_row(
-                "알림",
+                self._t("alert_short"),
                 alert_text,
             )
         )
 
         self.startup_summary_value_label = (
             create_summary_row(
-                "자동 실행",
+                self._t("startup_short"),
                 (
-                    "켜짐"
+                    self._t("on")
                     if self.start_with_windows
-                    else "꺼짐"
+                    else self._t("off")
                 ),
                 value_color=(
                     GREEN
@@ -2524,19 +2874,21 @@ class UsageTrayApp:
                 text=f"{percent}%",
                 fill=TEXT_SECONDARY,
                 anchor="e",
-                font=("맑은 고딕", 7),
+                font=(self.ui_font_family, 7),
             )
 
         if not points:
             canvas.create_text(
                 (left + right) / 2,
                 (top + bottom) / 2,
-                text=(
-                    "기록이 쌓이면 "
-                    "그래프가 표시됩니다."
-                ),
+                text=self._t("history_empty"),
                 fill=TEXT_SECONDARY,
-                font=("맑은 고딕", 9),
+                width=max(
+                    40,
+                    right - left - 20,
+                ),
+                justify="center",
+                font=(self.ui_font_family, 9),
             )
             return
 
@@ -2643,7 +2995,7 @@ class UsageTrayApp:
             ),
             fill=TEXT_SECONDARY,
             anchor="w",
-            font=("맑은 고딕", 7),
+            font=(self.ui_font_family, 7),
         )
 
         canvas.create_text(
@@ -2654,7 +3006,7 @@ class UsageTrayApp:
             ),
             fill=TEXT_SECONDARY,
             anchor="e",
-            font=("맑은 고딕", 7),
+            font=(self.ui_font_family, 7),
         )
 
     def _resize_popup_to_content(self) -> None:
@@ -2692,7 +3044,7 @@ class UsageTrayApp:
         self.loading = False
 
         self._set_refresh_status(
-            "최근 갱신 실패",
+            "status_failed",
             RED,
         )
 
@@ -2724,7 +3076,7 @@ class UsageTrayApp:
             text_color=RED,
             wraplength=440,
             font=ctk.CTkFont(
-                family="맑은 고딕",
+                family=self.ui_font_family,
                 size=12,
             ),
         )
@@ -2735,16 +3087,19 @@ class UsageTrayApp:
 
     def _set_refresh_status(
         self,
-        text: str,
+        status_key: str,
         color: str,
     ) -> None:
         """현재 갱신 상태를 저장하고 팝업에 표시한다."""
-        self.refresh_status_text = text
+        self.refresh_status_key = status_key
+        self.refresh_status_text = self._t(
+            status_key
+        )
         self.refresh_status_color = color
 
         if self.status_label is not None:
             self.status_label.configure(
-                text=f"●  {text}",
+                text=self.refresh_status_text,
                 text_color=color,
             )
 
@@ -2887,13 +3242,15 @@ class UsageTrayApp:
 
         return RED
 
-    @staticmethod
     def _format_reset_line(
+        self,
         reset_time: datetime | None,
     ) -> str:
-        """초기화까지 남은 시간과 실제 시각을 함께 표시한다."""
+        """초기화까지 남은 시간과 실제 시각을 표시한다."""
         if reset_time is None:
-            return "초기화 시각 정보 없음"
+            return self._t(
+                "reset_unknown"
+            )
 
         remaining = reset_time - datetime.now()
         total_seconds = max(
@@ -2912,23 +3269,35 @@ class UsageTrayApp:
         minutes = remainder // 60
 
         if days > 0:
-            relative_text = (
-                f"{days}일 {hours}시간 후 초기화"
+            relative_text = self._t(
+                "reset_days_hours",
+                days=days,
+                hours=hours,
             )
         elif hours > 0:
-            relative_text = (
-                f"{hours}시간 {minutes}분 후 초기화"
+            relative_text = self._t(
+                "reset_hours_minutes",
+                hours=hours,
+                minutes=minutes,
             )
         elif minutes > 0:
-            relative_text = (
-                f"{minutes}분 후 초기화"
+            relative_text = self._t(
+                "reset_minutes",
+                minutes=minutes,
             )
         else:
-            relative_text = "곧 초기화"
+            relative_text = self._t(
+                "reset_soon"
+            )
 
-        absolute_text = reset_time.strftime(
-            "%m월 %d일 %H:%M"
-        )
+        if self.language == "ko":
+            absolute_text = reset_time.strftime(
+                "%m월 %d일 %H:%M"
+            )
+        else:
+            absolute_text = reset_time.strftime(
+                "%m/%d %H:%M"
+            )
 
         return (
             f"{relative_text}  ·  {absolute_text}"

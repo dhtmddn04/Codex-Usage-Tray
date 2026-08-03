@@ -10,6 +10,8 @@ from typing import Callable
 
 from PIL import Image
 
+from i18n import detect_language
+
 
 if os.name != "nt":
     raise RuntimeError("NativeTrayIcon은 Windows에서만 사용할 수 있습니다.")
@@ -343,8 +345,14 @@ class NativeTrayIcon:
         on_refresh: Callable[[], None],
         on_quit: Callable[[], None],
         on_hover: Callable[[], None],
+        language: str | None = None,
     ) -> None:
         self._image = icon.copy()
+        self._language = (
+            language
+            if language in {"ko", "en"}
+            else detect_language()
+        )
 
         self._on_activate = on_activate
         self._on_refresh = on_refresh
@@ -366,6 +374,14 @@ class NativeTrayIcon:
         self._last_activate_at = 0.0
         self._last_context_at = 0.0
         self._last_hover_at = 0.0
+
+    def set_language(
+        self,
+        language: str,
+    ) -> None:
+        """트레이 우클릭 메뉴에 사용할 언어를 변경한다."""
+        if language in {"ko", "en"}:
+            self._language = language
 
     @property
     def icon(self) -> Image.Image:
@@ -804,17 +820,26 @@ class NativeTrayIcon:
             return
 
         try:
+            if self._language == "ko":
+                show_text = "사용량 보기"
+                refresh_text = "새로고침"
+                quit_text = "종료"
+            else:
+                show_text = "View usage"
+                refresh_text = "Refresh"
+                quit_text = "Quit"
+
             user32.AppendMenuW(
                 menu,
                 MF_STRING,
                 MENU_SHOW,
-                "사용량 보기",
+                show_text,
             )
             user32.AppendMenuW(
                 menu,
                 MF_STRING,
                 MENU_REFRESH,
-                "새로고침",
+                refresh_text,
             )
             user32.AppendMenuW(
                 menu,
@@ -826,7 +851,7 @@ class NativeTrayIcon:
                 menu,
                 MF_STRING,
                 MENU_QUIT,
-                "종료",
+                quit_text,
             )
 
             point = wintypes.POINT()
