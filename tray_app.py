@@ -248,10 +248,14 @@ class UsageTrayApp:
         )
 
         self.popup: ctk.CTkToplevel | None = None
-        self.settings_window: ctk.CTkToplevel | None = None
+        self.popup_view = "usage"
         self.startup_switch: ctk.CTkSwitch | None = None
         self.outer_frame: ctk.CTkFrame | None = None
         self.content_frame: ctk.CTkFrame | None = None
+        self.header_title_label: ctk.CTkLabel | None = None
+        self.header_action_button: ctk.CTkButton | None = None
+        self.header_title_frame: ctk.CTkFrame | None = None
+        self.header_title_label: ctk.CTkLabel | None = None
         self.next_refresh_value_label: (
             ctk.CTkLabel | None
         ) = None
@@ -379,31 +383,17 @@ class UsageTrayApp:
     def _rebuild_language_dependent_windows(
         self,
     ) -> None:
-        """언어 변경 후 팝업과 설정 창을 새 문구로 다시 만든다."""
+        """언어 변경 후 현재 팝업 화면을 새 문구로 다시 그린다."""
         if (
-            self.popup is not None
-            and self.popup.winfo_exists()
+            self.popup is None
+            or not self.popup.winfo_exists()
         ):
-            self.popup.destroy()
+            return
 
-        self.popup = None
-        self.outer_frame = None
-        self.content_frame = None
-        self.auto_refresh_label = None
-        self.next_refresh_value_label = None
-        self.last_refresh_value_label = None
-        self.status_label = None
-        self.icon_summary_value_label = None
-        self.alert_summary_value_label = None
-        self.startup_summary_value_label = None
-        self.alert_notice_label = None
-        self.popup_height = INITIAL_POPUP_HEIGHT
-
-        self._close_settings()
-        self.root.after(
-            20,
-            self._open_settings,
-        )
+        if self.popup_view == "settings":
+            self._render_settings_view()
+        else:
+            self._show_usage_view()
 
     def _get_window_label(
         self,
@@ -993,6 +983,12 @@ class UsageTrayApp:
         if self.popup is None:
             return
 
+        if (
+            not popup_created
+            and self.popup_view == "settings"
+        ):
+            self._show_usage_view()
+
         if self.latest_snapshot is not None:
             # 새 팝업을 만든 경우에만 내용을 처음 생성한다.
             # 기존 팝업은 숨겨져 있던 내용을 그대로 사용한다.
@@ -1028,6 +1024,7 @@ class UsageTrayApp:
     def _build_popup(self) -> None:
         """제목 표시줄이 없는 팝오버 창을 만든다."""
         self.popup = ctk.CTkToplevel(self.root)
+        self.popup_view = "usage"
 
         # 내부 UI 구성이 끝나기 전에는 화면에 표시하지 않는다.
         self.popup.withdraw()
@@ -1076,6 +1073,7 @@ class UsageTrayApp:
 
         header = ctk.CTkFrame(
             outer_frame,
+            height=32,
             fg_color="transparent",
         )
         header.pack(
@@ -1083,18 +1081,25 @@ class UsageTrayApp:
             padx=18,
             pady=(16, 9),
         )
+        header.pack_propagate(False)
 
-        title_label = ctk.CTkLabel(
+        title_frame = ctk.CTkFrame(
             header,
-            text=self._t("app_title"),
-            text_color=TEXT_PRIMARY,
-            font=ctk.CTkFont(
-                family=self.ui_font_family,
-                size=18,
-                weight="bold",
-            ),
+            width=220,
+            height=30,
+            corner_radius=0,
+            fg_color=BACKGROUND,
         )
-        title_label.pack(side="left")
+        title_frame.pack(
+            side="left",
+        )
+        title_frame.pack_propagate(False)
+
+        self.header_title_frame = title_frame
+
+        self._set_header_title(
+            self._t("app_title")
+        )
 
         settings_button = ctk.CTkButton(
             header,
@@ -1112,6 +1117,7 @@ class UsageTrayApp:
             ),
         )
         settings_button.pack(side="right")
+        self.header_action_button = settings_button
 
         self.auto_refresh_label = ctk.CTkLabel(
             header,
@@ -1143,7 +1149,38 @@ class UsageTrayApp:
         self.popup.update_idletasks()
         self._hide_popup_from_taskbar()
         self._apply_windows_rounding()
-        self._position_popup()       
+        self._position_popup()    
+
+    def _set_header_title(
+        self,
+        text: str,
+    ) -> None:
+        """헤더 제목 라벨을 새로 만들어 잔상을 방지한다."""
+        if self.header_title_frame is None:
+            return
+
+        for widget in (
+            self.header_title_frame.winfo_children()
+        ):
+            widget.destroy()
+
+        self.header_title_label = ctk.CTkLabel(
+            self.header_title_frame,
+            text=text,
+            height=30,
+            fg_color=BACKGROUND,
+            text_color=TEXT_PRIMARY,
+            anchor="w",
+            font=ctk.CTkFont(
+                family=self.ui_font_family,
+                size=18,
+                weight="bold",
+            ),
+        )
+        self.header_title_label.pack(
+            fill="both",
+            expand=True,
+        )   
 
     def _update_settings_summary(self) -> None:
         """설정 변경 내용을 팝업 요약에 반영한다."""
@@ -1205,105 +1242,117 @@ class UsageTrayApp:
             )
 
     def _open_settings(self) -> None:
-        """설정 창을 열거나 기존 설정 창을 앞으로 가져온다."""
-        if (
-            self.settings_window is not None
-            and self.settings_window.winfo_exists()
-        ):
-            self.settings_window.deiconify()
-            self.settings_window.lift()
-            self.settings_window.focus_force()
+        """현재 팝업 안에서 설정 화면으로 전환한다."""
+        if self.content_frame is None:
             return
 
-        self.settings_window = ctk.CTkToplevel(
-            self.root
-        )
-        self.settings_window.title(
-            self._t("settings_window_title")
-        )
-        self.settings_window.resizable(False, False)
-        self.settings_window.configure(
-            fg_color=BACKGROUND
-        )
-        self.settings_window.attributes(
-            "-topmost",
-            True,
-        )
-        self.settings_window.protocol(
-            "WM_DELETE_WINDOW",
-            self._close_settings,
+        self.popup_opened_by_hover = False
+        self._cancel_hover_jobs()
+        self.popup_view = "settings"
+        self._render_settings_view()
+
+        if self.popup is not None:
+            self.popup.focus_force()
+
+    def _render_settings_view(self) -> None:
+        """사용량 팝업의 내용을 설정 화면으로 바꾼다."""
+        if self.content_frame is None:
+            return
+
+        self.popup_view = "settings"
+        self._set_header_title(
+            self._t("settings_title")
         )
 
-        width = (
-            430
-            if self.language == "en"
-            else 360
-        )
-        height = 388
+        self._clear_content()
+
+        if self.auto_refresh_label is not None:
+            self.auto_refresh_label.pack_forget()
+
+        if self.header_action_button is not None:
+            self.header_action_button.configure(
+                text="←",
+                command=self._show_usage_view,
+                font=ctk.CTkFont(
+                    family="Segoe UI Symbol",
+                    size=20,
+                ),
+            )
 
         option_menu_width = (
-            112
+            145
             if self.language == "en"
-            else 92
-        )
-        screen_width = (
-            self.settings_window.winfo_screenwidth()
-        )
-        screen_height = (
-            self.settings_window.winfo_screenheight()
+            else 115
         )
 
-        x = (screen_width - width) // 2
-        y = (screen_height - height) // 2
+        def create_setting_row(
+            title: str,
+        ) -> ctk.CTkFrame:
+            row = ctk.CTkFrame(
+                self.content_frame,
+                height=50,
+                corner_radius=10,
+                fg_color=CARD_BACKGROUND,
+            )
+            row.pack(
+                fill="x",
+                pady=(0, 9),
+            )
+            row.pack_propagate(False)
 
-        self.settings_window.geometry(
-            f"{width}x{height}+{x}+{y}"
-        )
+            label = ctk.CTkLabel(
+                row,
+                text=title,
+                text_color=TEXT_PRIMARY,
+                anchor="w",
+                font=ctk.CTkFont(
+                    family=self.ui_font_family,
+                    size=12,
+                ),
+            )
+            label.pack(
+                side="left",
+                padx=14,
+            )
 
-        title_label = ctk.CTkLabel(
-            self.settings_window,
-            text=self._t("settings_title"),
-            text_color=TEXT_PRIMARY,
-            font=ctk.CTkFont(
-                family=self.ui_font_family,
-                size=20,
-                weight="bold",
-            ),
-        )
-        title_label.pack(
-            anchor="w",
-            padx=22,
-            pady=(20, 14),
-        )
+            return row
 
-        language_row = ctk.CTkFrame(
-            self.settings_window,
-            height=48,
-            corner_radius=10,
-            fg_color=CARD_BACKGROUND,
-        )
-        language_row.pack(
-            fill="x",
-            padx=20,
-            pady=5,
-        )
-        language_row.pack_propagate(False)
+        def create_option_menu(
+            row: ctk.CTkFrame,
+            *,
+            values: list[str],
+            command: Any,
+            selected_value: str,
+        ) -> ctk.CTkOptionMenu:
+            menu = ctk.CTkOptionMenu(
+                row,
+                values=values,
+                command=command,
+                width=option_menu_width,
+                height=30,
+                corner_radius=8,
+                fg_color="#3A3C40",
+                button_color="#44464A",
+                button_hover_color="#50535A",
+                dropdown_fg_color=CARD_BACKGROUND,
+                dropdown_hover_color="#3A3C40",
+                text_color=TEXT_PRIMARY,
+                font=ctk.CTkFont(
+                    family=self.ui_font_family,
+                    size=11,
+                ),
+            )
+            menu.set(selected_value)
+            menu.pack(
+                side="right",
+                padx=12,
+            )
+            return menu
 
-        language_label = ctk.CTkLabel(
-            language_row,
-            text=self._t("language"),
-            text_color=TEXT_PRIMARY,
-            font=ctk.CTkFont(
-                family=self.ui_font_family,
-                size=12,
-            ),
+        language_row = create_setting_row(
+            self._t("language")
         )
-        language_label.pack(
-            side="left",
-            padx=14,
-        )
-
-        language_menu = ctk.CTkOptionMenu(
+        create_option_menu(
             language_row,
             values=[
                 self._get_language_mode_text(
@@ -1313,58 +1362,17 @@ class UsageTrayApp:
                 in LANGUAGE_MODE_OPTIONS
             ],
             command=self._on_language_mode_changed,
-            width=option_menu_width,
-            height=30,
-            corner_radius=8,
-            fg_color="#3A3C40",
-            button_color="#44464A",
-            button_hover_color="#50535A",
-            dropdown_fg_color=CARD_BACKGROUND,
-            dropdown_hover_color="#3A3C40",
-            text_color=TEXT_PRIMARY,
-            font=ctk.CTkFont(
-                family=self.ui_font_family,
-                size=11,
+            selected_value=(
+                self._get_language_mode_text(
+                    self.language_mode
+                )
             ),
         )
-        language_menu.set(
-            self._get_language_mode_text(
-                self.language_mode
-            )
-        )
-        language_menu.pack(
-            side="right",
-            padx=12,
-        )
 
-        refresh_row = ctk.CTkFrame(
-            self.settings_window,
-            height=48,
-            corner_radius=10,
-            fg_color=CARD_BACKGROUND,
+        refresh_row = create_setting_row(
+            self._t("refresh_interval")
         )
-        refresh_row.pack(
-            fill="x",
-            padx=20,
-            pady=5,
-        )
-        refresh_row.pack_propagate(False)
-
-        refresh_label = ctk.CTkLabel(
-            refresh_row,
-            text=self._t("refresh_interval"),
-            text_color=TEXT_PRIMARY,
-            font=ctk.CTkFont(
-                family=self.ui_font_family,
-                size=12,
-            ),
-        )
-        refresh_label.pack(
-            side="left",
-            padx=14,
-        )
-
-        refresh_menu = ctk.CTkOptionMenu(
+        create_option_menu(
             refresh_row,
             values=[
                 self._t(
@@ -1374,117 +1382,39 @@ class UsageTrayApp:
                 for minutes in REFRESH_INTERVAL_OPTIONS
             ],
             command=self._on_refresh_interval_changed,
-            width=option_menu_width,
-            height=30,
-            corner_radius=8,
-            fg_color="#3A3C40",
-            button_color="#44464A",
-            button_hover_color="#50535A",
-            dropdown_fg_color=CARD_BACKGROUND,
-            dropdown_hover_color="#3A3C40",
-            text_color=TEXT_PRIMARY,
-            font=ctk.CTkFont(
-                family=self.ui_font_family,
-                size=11,
-            ),
-        )
-        refresh_menu.set(
-            self._t(
+            selected_value=self._t(
                 "minutes_option",
                 minutes=self.auto_refresh_minutes,
-            )
-        )
-        refresh_menu.pack(
-            side="right",
-            padx=12,
-        )
-
-        icon_row = ctk.CTkFrame(
-            self.settings_window,
-            height=48,
-            corner_radius=10,
-            fg_color=CARD_BACKGROUND,
-        )
-        icon_row.pack(
-            fill="x",
-            padx=20,
-            pady=5,
-        )
-        icon_row.pack_propagate(False)
-
-        icon_label = ctk.CTkLabel(
-            icon_row,
-            text=self._t("tray_icon_basis"),
-            text_color=TEXT_PRIMARY,
-            font=ctk.CTkFont(
-                family=self.ui_font_family,
-                size=12,
             ),
         )
-        icon_label.pack(
-            side="left",
-            padx=14,
-        )
 
-        icon_menu = ctk.CTkOptionMenu(
+        icon_row = create_setting_row(
+            self._t("tray_icon_basis")
+        )
+        create_option_menu(
             icon_row,
             values=[
                 self._t("icon_week"),
                 self._t("icon_five_hour"),
             ],
             command=self._on_icon_display_mode_changed,
-            width=option_menu_width,
-            height=30,
-            corner_radius=8,
-            fg_color="#3A3C40",
-            button_color="#44464A",
-            button_hover_color="#50535A",
-            dropdown_fg_color=CARD_BACKGROUND,
-            dropdown_hover_color="#3A3C40",
-            text_color=TEXT_PRIMARY,
-            font=ctk.CTkFont(
-                family=self.ui_font_family,
-                size=11,
+            selected_value=self._get_icon_mode_text(
+                self.icon_display_mode
             ),
         )
-        icon_menu.set(
-            self._get_icon_mode_text(
-                self.icon_display_mode
+
+        alert_row = create_setting_row(
+            self._t("low_balance_alert")
+        )
+        alert_value = (
+            self._t("off")
+            if self.low_balance_threshold == 0
+            else self._t(
+                "threshold_option",
+                threshold=self.low_balance_threshold,
             )
         )
-        icon_menu.pack(
-            side="right",
-            padx=12,
-        )
-
-        alert_row = ctk.CTkFrame(
-            self.settings_window,
-            height=48,
-            corner_radius=10,
-            fg_color=CARD_BACKGROUND,
-        )
-        alert_row.pack(
-            fill="x",
-            padx=20,
-            pady=5,
-        )
-        alert_row.pack_propagate(False)
-
-        alert_label = ctk.CTkLabel(
-            alert_row,
-            text=self._t("low_balance_alert"),
-            text_color=TEXT_PRIMARY,
-            font=ctk.CTkFont(
-                family=self.ui_font_family,
-                size=12,
-            ),
-        )
-        alert_label.pack(
-            side="left",
-            padx=14,
-        )
-
-        alert_menu = ctk.CTkOptionMenu(
+        create_option_menu(
             alert_row,
             values=[
                 self._t("off"),
@@ -1499,67 +1429,12 @@ class UsageTrayApp:
             command=(
                 self._on_low_balance_threshold_changed
             ),
-            width=option_menu_width,
-            height=30,
-            corner_radius=8,
-            fg_color="#3A3C40",
-            button_color="#44464A",
-            button_hover_color="#50535A",
-            dropdown_fg_color=CARD_BACKGROUND,
-            dropdown_hover_color="#3A3C40",
-            text_color=TEXT_PRIMARY,
-            font=ctk.CTkFont(
-                family=self.ui_font_family,
-                size=11,
-            ),
+            selected_value=alert_value,
         )
 
-        if self.low_balance_threshold == 0:
-            alert_menu.set(
-                self._t("off")
-            )
-        else:
-            alert_menu.set(
-                self._t(
-                    "threshold_option",
-                    threshold=(
-                        self.low_balance_threshold
-                    ),
-                )
-            )
-
-        alert_menu.pack(
-            side="right",
-            padx=12,
+        startup_row = create_setting_row(
+            self._t("startup")
         )
-
-        startup_row = ctk.CTkFrame(
-            self.settings_window,
-            height=48,
-            corner_radius=10,
-            fg_color=CARD_BACKGROUND,
-        )
-        startup_row.pack(
-            fill="x",
-            padx=20,
-            pady=5,
-        )
-        startup_row.pack_propagate(False)
-
-        startup_label = ctk.CTkLabel(
-            startup_row,
-            text=self._t("startup"),
-            text_color=TEXT_PRIMARY,
-            font=ctk.CTkFont(
-                family=self.ui_font_family,
-                size=12,
-            ),
-        )
-        startup_label.pack(
-            side="left",
-            padx=14,
-        )
-
         self.startup_switch = ctk.CTkSwitch(
             startup_row,
             text="",
@@ -1578,6 +1453,65 @@ class UsageTrayApp:
             self.startup_switch.select()
         else:
             self.startup_switch.deselect()
+
+        if self.popup is not None:
+            self.popup.after_idle(
+                self._resize_popup_to_content
+            )
+
+    def _show_usage_view(self) -> None:
+        """설정 화면에서 사용량 화면으로 돌아간다."""
+        if self.content_frame is None:
+            return
+
+        self.popup_view = "usage"
+
+        self._set_header_title(
+            self._t("app_title")
+        )
+
+        if self.header_action_button is not None:
+            self.header_action_button.configure(
+                text="⚙",
+                command=self._open_settings,
+                font=ctk.CTkFont(
+                    family="Segoe UI Symbol",
+                    size=18,
+                ),
+            )
+
+        if self.auto_refresh_label is not None:
+            self.auto_refresh_label.configure(
+                text=self._t(
+                    "auto_refresh",
+                    minutes=self.auto_refresh_minutes,
+                ),
+                font=ctk.CTkFont(
+                    family=self.ui_font_family,
+                    size=11,
+                ),
+            )
+
+            if not self.auto_refresh_label.winfo_ismapped():
+                self.auto_refresh_label.pack(
+                    side="right",
+                    padx=(0, 8),
+                )
+
+        if self.latest_snapshot is not None:
+            self._display_usage(
+                self.latest_snapshot,
+                schedule_refresh=False,
+            )
+        else:
+            self._refresh_usage(
+                show_loading=True
+            )
+
+        if self.popup is not None:
+            self.popup.after_idle(
+                self._resize_popup_to_content
+            )
 
     def _on_language_mode_changed(
         self,
@@ -1744,13 +1678,6 @@ class UsageTrayApp:
         self.start_with_windows = requested_enabled
         self._save_settings()
         self._update_settings_summary()
-
-    def _close_settings(self) -> None:
-        """설정 창을 닫는다."""
-        if self.settings_window is not None:
-            self.settings_window.destroy()
-            self.settings_window = None
-            self.startup_switch = None
 
     def _hide_popup_from_taskbar(self) -> None:
         """팝업이 작업표시줄과 Alt+Tab에 나타나지 않게 한다."""
@@ -2177,6 +2104,7 @@ class UsageTrayApp:
         self.alert_summary_value_label = None
         self.startup_summary_value_label = None
         self.alert_notice_label = None
+        self.startup_switch = None
 
         for widget in self.content_frame.winfo_children():
             widget.destroy()
@@ -2198,7 +2126,10 @@ class UsageTrayApp:
             ORANGE,
         )
 
-        if show_loading:
+        if (
+            show_loading
+            and self.popup_view == "usage"
+        ):
             self._clear_content()
 
             if self.content_frame is not None:
@@ -2280,6 +2211,11 @@ class UsageTrayApp:
 
         # 팝업을 아직 만든 적이 없어도 아이콘 갱신은 완료된다.
         if self.content_frame is None:
+            return
+
+        # 설정 화면을 보고 있을 때 백그라운드 갱신으로
+        # 현재 설정 UI가 사용량 화면으로 바뀌지 않게 한다.
+        if self.popup_view != "usage":
             return
 
         self._clear_content()
@@ -3014,6 +2950,7 @@ class UsageTrayApp:
         if (
             self.popup is None
             or self.outer_frame is None
+            or self.popup_view == "settings"
         ):
             return
 
@@ -3063,6 +3000,7 @@ class UsageTrayApp:
         if (
             self.content_frame is None
             or not self._popup_is_visible()
+            or self.popup_view != "usage"
         ):
             return
 
@@ -3311,9 +3249,6 @@ class UsageTrayApp:
 
         if self.popup is not None:
             self.popup.destroy()
-
-        if self.settings_window is not None:
-            self.settings_window.destroy()
 
         self.root.destroy()
 
